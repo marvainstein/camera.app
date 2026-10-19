@@ -89,33 +89,59 @@ def hue_weight(deg, center, width):
     return smoothstep(clamp(1 - d / width))
 
 
-def look_dorado_200(r, g, b):
-    # Emulación propia del estilo "negativo color de consumo, ISO 200" (tipo Gold 200),
-    # hecha a partir de sus rasgos conocidos y no de otro LUT: dominante cálida, rojos y
-    # amarillos ricos, verdes que tiran a oliva, azules apagados, negros levantados con
-    # leve tinte frío y altas luces suaves y amarillentas.
-    lr, lg, lb = srgb_to_linear(r) * 1.05, srgb_to_linear(g) * 1.0, srgb_to_linear(b) * 0.84
-    # Hombro suave en luz lineal (las altas luces se comprimen en vez de quemarse).
-    lr, lg, lb = (c / (1 + 0.15 * c) * 1.15 for c in (lr, lg, lb))
+def film_look(r, g, b, p):
+    """Receta propia de emulación de negativo color. `p` son los parámetros de cada película
+    (los mismos sliders de la vista previa)."""
+    warm = p["calidez"]
+    lr = srgb_to_linear(r) * (1 + 0.05 * warm)
+    lg = srgb_to_linear(g)
+    lb = srgb_to_linear(b) * (1 - 0.16 * warm)
+    # Hombro en luz lineal: las altas luces se comprimen en vez de quemarse.
+    k = p["altas_luces"]
+    lr, lg, lb = (c / (1 + k * c) * (1 + k) for c in (lr, lg, lb))
     er, eg, eb = (linear_to_srgb(c) for c in (lr, lg, lb))
 
     h, sat, val = colorsys.rgb_to_hsv(er, eg, eb)
     deg = h * 360
     green = hue_weight(deg, 120, 55)
-    deg -= 12 * green                      # verdes → oliva
-    sat *= 1 - 0.15 * green
-    sat *= 1 - 0.20 * hue_weight(deg, 215, 45)   # cian/azules más apagados
-    sat *= 1 + 0.12 * hue_weight(deg, 30, 40)    # rojos/naranjas/amarillos más ricos
+    deg -= p["verdes_oliva"] * green
+    sat *= 1 - p["verdes_apagados"] * green
+    sat *= 1 - p["azules_apagados"] * hue_weight(deg, 215, 45)
+    sat *= 1 + p["rojos_amarillos"] * hue_weight(deg, 30, 40)
+    sat *= p["saturacion"]
     er, eg, eb = colorsys.hsv_to_rgb((deg % 360) / 360, clamp(sat), val)
 
     out = []
     luma = 0.2126 * er + 0.7152 * eg + 0.0722 * eb
     shadow, light = (1 - luma) ** 2, luma ** 2
     for c, tint_shadow, tint_light in zip((er, eg, eb), (-0.006, 0.006, 0.004), (0.015, 0.008, -0.02)):
-        c = contrast(c, 0.25)
-        c = 0.045 + (0.975 - 0.045) * c    # negros levantados, blancos sin llegar a 1
-        out.append(clamp(c + tint_shadow * shadow + tint_light * light))
+        c = contrast(c, p["contraste"])
+        c = p["negros"] + (p["blancos"] - p["negros"]) * c
+        out.append(clamp(c + tint_shadow * p["sombras_frias"] * shadow
+                         + tint_light * p["luces_amarillas"] * light))
     return tuple(out)
+
+
+# Estilo negativo color de consumo ISO 200 (tipo Gold 200): dominante cálida, rojos y amarillos
+# ricos, verdes hacia oliva, azules apagados, negros levantados, altas luces suaves.
+DORADO_200 = dict(calidez=1.0, altas_luces=0.15, contraste=0.25, negros=0.045, blancos=0.975,
+                  verdes_oliva=12, verdes_apagados=0.15, azules_apagados=0.20, rojos_amarillos=0.12,
+                  saturacion=1.0, sombras_frias=1.0, luces_amarillas=1.0)
+
+# Estilo negativo profesional de retrato ISO 400 (tipo Portra 400): contraste bajo y mucha
+# latitud, colores pastel, pieles cálidas y suaves, verdes y azules contenidos, altas luces
+# cremosas.
+RETRATO_400 = dict(calidez=0.5, altas_luces=0.35, contraste=0.08, negros=0.035, blancos=0.98,
+                   verdes_oliva=6, verdes_apagados=0.25, azules_apagados=0.25, rojos_amarillos=-0.05,
+                   saturacion=0.88, sombras_frias=0.8, luces_amarillas=0.7)
+
+
+def look_dorado_200(r, g, b):
+    return film_look(r, g, b, DORADO_200)
+
+
+def look_retrato_400(r, g, b):
+    return film_look(r, g, b, RETRATO_400)
 
 
 LOOKS = [
@@ -124,6 +150,7 @@ LOOKS = [
     ("bn-neutro", "B/N Neutro", look_bn_neutro, 0.35),
     ("calido", "Cálido", look_calido, 0.15),
     ("dorado-200", "Dorado 200", look_dorado_200, 0.3),
+    ("retrato-400", "Retrato 400", look_retrato_400, 0.2),
 ]
 
 

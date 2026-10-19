@@ -25,6 +25,12 @@
       "name": "Dorado 200",
       "lut": "dorado-200.lut",
       "grain": 0.3
+    },
+    {
+      "id": "retrato-400",
+      "name": "Retrato 400",
+      "lut": "retrato-400.lut",
+      "grain": 0.2
     }
   ]
 }
