@@ -1,10 +1,26 @@
 #!/usr/bin/env bash
-# Corre todos los tests de los paquetes en el simulador de iOS (vía el scheme de la app).
+# Compila la app y corre todos los tests de los paquetes en el simulador de iOS.
 # Uso: scripts/test.sh ["nombre del simulador"]
+# Sin argumento usa el primer iPhone del runtime de iOS más nuevo instalado.
 set -eu
 cd "$(dirname "$0")/.."
-sim="${1:-$(xcrun simctl list devices available | grep -m1 -oE 'iPhone [^(]+' | sed 's/ *$//')}"
-echo "Simulador: $sim"
+if [ $# -gt 0 ]; then
+  destination="platform=iOS Simulator,name=$1"
+else
+  udid="$(xcrun simctl list devices available -j | python3 -c '
+import json, sys
+devices = json.load(sys.stdin)["devices"]
+ios = sorted((k for k in devices if ".iOS-" in k),
+             key=lambda k: [int(x) for x in k.rsplit(".iOS-", 1)[1].split("-")])
+for runtime in reversed(ios):
+    phones = [d for d in devices[runtime] if d["name"].startswith("iPhone")]
+    if phones:
+        print(phones[0]["udid"]); break
+')"
+  [ -n "$udid" ] || { echo "No hay simuladores de iPhone disponibles" >&2; exit 1; }
+  destination="platform=iOS Simulator,id=$udid"
+fi
+echo "Destino: $destination"
 xcodebuild -workspace CameraApp.xcworkspace -scheme CameraApp \
-  -destination "platform=iOS Simulator,name=$sim" \
+  -destination "$destination" \
   -derivedDataPath build/DerivedData test

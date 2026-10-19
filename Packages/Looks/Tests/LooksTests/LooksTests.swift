@@ -68,7 +68,10 @@ private func maxChannelDifference(_ a: [UInt8], _ b: [UInt8]) -> Int {
     }
 }
 
-@Suite struct LookPipelineTests {
+/// Algunas VMs de CI no exponen GPU; ahí se saltean los tests que necesitan Metal.
+private let hasMetal = MTLCreateSystemDefaultDevice() != nil
+
+@Suite(.enabled(if: hasMetal, "No hay dispositivo Metal")) struct LookPipelineTests {
     let renderer: LookRenderer
 
     init() throws {

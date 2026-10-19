@@ -62,8 +62,10 @@ ProRAW solo se habilita en modelos Pro.
 scripts/test.sh
 ```
 
-Corre en el simulador los tests de ambos paquetes (test plan `CameraApp.xctestplan`). También se
-pueden correr en macOS, más rápido:
+Compila la app y corre en el simulador (el iPhone del runtime de iOS más nuevo, o el que pases como
+argumento) los tests de ambos paquetes (test plan `CameraApp.xctestplan`). GitHub Actions
+(`.github/workflows/tests.yml`) corre lo mismo en cada PR y en `main`. Los tests de GPU se saltean
+si la máquina no tiene Metal. También se pueden correr en macOS, más rápido:
 
 ```bash
 swift test --package-path Packages/Looks
