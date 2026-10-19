@@ -1,0 +1,6 @@
+# Material de terceros: nunca versionar
+*.ipa
+re-out/
+re-inputs/
+
+.DS_Store
