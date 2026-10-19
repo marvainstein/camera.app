@@ -19,6 +19,12 @@
       "name": "Cálido",
       "lut": "calido.lut",
       "grain": 0.15
+    },
+    {
+      "id": "dorado-200",
+      "name": "Dorado 200",
+      "lut": "dorado-200.lut",
+      "grain": 0.3
     }
   ]
 }

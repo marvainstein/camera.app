@@ -24,6 +24,7 @@ R variando más rápido, luego G y luego B (mismo orden que una textura Metal 3D
 Solo stdlib.
 """
 import argparse
+import colorsys
 import json
 import os
 import re
@@ -82,11 +83,47 @@ def look_calido(r, g, b):
     return tuple(clamp(0.025 + 0.975 * contrast(c, 0.2)) for c in out)
 
 
+def hue_weight(deg, center, width):
+    """Peso 0…1 según la distancia angular al tono `center` (grados), con borde suave."""
+    d = abs((deg - center + 180) % 360 - 180)
+    return smoothstep(clamp(1 - d / width))
+
+
+def look_dorado_200(r, g, b):
+    # Emulación propia del estilo "negativo color de consumo, ISO 200" (tipo Gold 200),
+    # hecha a partir de sus rasgos conocidos y no de otro LUT: dominante cálida, rojos y
+    # amarillos ricos, verdes que tiran a oliva, azules apagados, negros levantados con
+    # leve tinte frío y altas luces suaves y amarillentas.
+    lr, lg, lb = srgb_to_linear(r) * 1.05, srgb_to_linear(g) * 1.0, srgb_to_linear(b) * 0.84
+    # Hombro suave en luz lineal (las altas luces se comprimen en vez de quemarse).
+    lr, lg, lb = (c / (1 + 0.15 * c) * 1.15 for c in (lr, lg, lb))
+    er, eg, eb = (linear_to_srgb(c) for c in (lr, lg, lb))
+
+    h, sat, val = colorsys.rgb_to_hsv(er, eg, eb)
+    deg = h * 360
+    green = hue_weight(deg, 120, 55)
+    deg -= 12 * green                      # verdes → oliva
+    sat *= 1 - 0.15 * green
+    sat *= 1 - 0.20 * hue_weight(deg, 215, 45)   # cian/azules más apagados
+    sat *= 1 + 0.12 * hue_weight(deg, 30, 40)    # rojos/naranjas/amarillos más ricos
+    er, eg, eb = colorsys.hsv_to_rgb((deg % 360) / 360, clamp(sat), val)
+
+    out = []
+    luma = 0.2126 * er + 0.7152 * eg + 0.0722 * eb
+    shadow, light = (1 - luma) ** 2, luma ** 2
+    for c, tint_shadow, tint_light in zip((er, eg, eb), (-0.006, 0.006, 0.004), (0.015, 0.008, -0.02)):
+        c = contrast(c, 0.25)
+        c = 0.045 + (0.975 - 0.045) * c    # negros levantados, blancos sin llegar a 1
+        out.append(clamp(c + tint_shadow * shadow + tint_light * light))
+    return tuple(out)
+
+
 LOOKS = [
     # (id, nombre visible, función, grano sugerido)
     ("identidad", "Natural", look_identidad, 0.0),
     ("bn-neutro", "B/N Neutro", look_bn_neutro, 0.35),
     ("calido", "Cálido", look_calido, 0.15),
+    ("dorado-200", "Dorado 200", look_dorado_200, 0.3),
 ]
 
 
