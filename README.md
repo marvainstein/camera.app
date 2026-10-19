@@ -28,7 +28,7 @@ Packages/CaptureCore/      AVFoundation: sesión, P/A, ISO/obturación/EV/WB man
                            captura HEIC + ProRAW, guardado en Fotos (PhotoKit)
 Packages/Looks/            Metal: LUT 3D 64³ RGBA16F + intensidad + grano gaussiano;
                            mismo pipeline para el preview y la foto final
-scripts/make_luts.py       genera los LUTs de ejemplo (fórmulas propias) y convierte .cube
+scripts/make_luts.py       catálogo de LUTs: genera los propios e importa .cube
 scripts/test.sh            corre todos los tests en el simulador
 ```
 
@@ -63,9 +63,8 @@ scripts/test.sh
 ```
 
 Compila la app y corre en el simulador (el iPhone del runtime de iOS más nuevo, o el que pases como
-argumento) los tests de ambos paquetes (test plan `CameraApp.xctestplan`). GitHub Actions
-(`.github/workflows/tests.yml`) corre lo mismo en cada PR y en `main`. Los tests de GPU se saltean
-si la máquina no tiene Metal. También se pueden correr en macOS, más rápido:
+argumento) los tests de ambos paquetes (test plan `CameraApp.xctestplan`). Los tests de GPU se
+saltean si la máquina no tiene Metal. También se pueden correr en macOS, más rápido:
 
 ```bash
 swift test --package-path Packages/Looks
@@ -106,21 +105,41 @@ Qué se prueba:
 
 ### LUTs
 
-Los Looks incluidos (`Packages/Looks/Sources/Looks/Resources/LUTs/`) salen de fórmulas propias en
-`scripts/make_luts.py`: **Natural** (identidad), **B/N Neutro** (luminancia Rec.709 + curva S
-suave) y **Cálido** (balance cálido en luz lineal, sombras levantadas, +8 % saturación).
-`looks.json` es el manifiesto versionado (id, nombre, archivo, grano sugerido).
+`Packages/Looks/Sources/Looks/Resources/LUTs/looks.json` es el catálogo (id, nombre, archivo,
+grano sugerido y, para los importados, el archivo de origen y su espacio de entrada). La app
+muestra los Looks en ese orden.
+
+Looks propios, generados con fórmulas de `scripts/make_luts.py`: **Natural** (identidad),
+**B/N Neutro** (luminancia Rec.709 + curva S suave) y **Cálido** (balance cálido en luz lineal,
+sombras levantadas, +8 % saturación).
 
 ```bash
-python3 scripts/make_luts.py
+python3 scripts/make_luts.py generate
 ```
 
-Para sumar un Look diseñado en Resolve/Lightroom: exportar un `.cube` 3D, convertirlo y
-agregarlo a `LOOKS`/`looks.json`:
+**Importar un LUT** (`.cube` 3D de cualquier tamaño, p. ej. 17/33/65, con o sin `DOMAIN_MIN/MAX`):
+se remuestrea a 64³, se adapta al espacio de entrada de la app y se agrega o actualiza en el
+catálogo.
 
 ```bash
-python3 scripts/make_luts.py convert mi-look.cube Packages/Looks/Sources/Looks/Resources/LUTs/mi-look.lut
+python3 scripts/make_luts.py add mi-look.cube --id mi-look --name "Mi Look" --grain 0.2 --input rec709
 ```
+
+- `--input srgb` (por defecto): el LUT espera valores sRGB, igual que la app.
+- `--input rec709`: el LUT se diseñó para Rec.709 gamma 2.4 (lo típico en Resolve). Se convierten
+  la entrada y la salida para que se vea como en el programa de origen.
+- Todavía no se soportan LUTs que esperan log (Apple Log, S-Log3…) ni `.cube` con shaper 1D.
+  El script los rechaza con un mensaje.
+
+```bash
+python3 scripts/make_luts.py list
+```
+
+```bash
+python3 scripts/make_luts.py remove mi-look
+```
+
+Solo usar LUTs propios o con licencia que permita distribuirlos dentro de la app.
 
 Formato `.lut`: cabecera de 16 bytes (`LAIKALUT`, versión u32 = 1, tamaño u32 = 64) + 64³ texeles
 RGBA float16 little-endian, R variando más rápido (mismo layout que la textura Metal 3D).

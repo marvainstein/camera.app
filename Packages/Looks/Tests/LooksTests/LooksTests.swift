@@ -56,7 +56,7 @@ private func maxChannelDifference(_ a: [UInt8], _ b: [UInt8]) -> Int {
 
     @Test func bundledLooksLoad() throws {
         let looks = try LookCatalog.bundled()
-        #expect(looks.map(\.id) == ["identidad", "bn-neutro", "calido"])
+        #expect(Set(["identidad", "bn-neutro", "calido"]).isSubset(of: looks.map(\.id)))
         for look in looks {
             #expect(try LookCatalog.lut(for: look).size == 64)
         }

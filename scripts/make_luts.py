@@ -1,18 +1,32 @@
 #!/usr/bin/env python3
-"""Genera los LUTs 3D de ejemplo (propios) para el paquete Looks.
+"""Catálogo de LUTs del paquete Looks: genera los propios e importa LUTs .cube.
 
 Uso:
-  scripts/make_luts.py                      # regenera los LUTs incluidos + looks.json
-  scripts/make_luts.py convert in.cube out.lut   # convierte un .cube propio (p. ej. de Resolve)
+  scripts/make_luts.py generate
+      Regenera los Looks propios (fórmulas de este archivo). Respeta los importados.
+  scripts/make_luts.py add ARCHIVO.cube --id ID --name "Nombre" [--grain 0.2] [--input srgb|rec709]
+      Importa un LUT 3D .cube (cualquier tamaño, con DOMAIN_MIN/MAX), lo remuestrea a 64³,
+      lo adapta al espacio de entrada de la app y lo agrega/actualiza en looks.json.
+  scripts/make_luts.py remove ID
+  scripts/make_luts.py list
+  scripts/make_luts.py convert ARCHIVO.cube SALIDA.lut [--input ...]
+      Solo convierte, sin tocar el catálogo.
+
+--input dice qué codificación espera el LUT de origen. La app le entrega valores sRGB (preview y
+HEIC); con "rec709" (gamma 2.4, típico de Resolve) se convierte entrada y salida para que el
+Look se vea como en el programa donde se diseñó. LUTs que esperan log (Apple Log, S-Log3…) o
+que tienen shaper 1D todavía no están soportados.
 
 Formato .lut (propio): cabecera de 16 bytes = b"LAIKALUT" + uint32 LE versión (1)
 + uint32 LE tamaño N (64), seguida de N³ texeles RGBA float16 little-endian con
 R variando más rápido, luego G y luego B (mismo orden que una textura Metal 3D).
 
-Todo se calcula con fórmulas propias; no se usa material de terceros. Solo stdlib.
+Solo stdlib.
 """
+import argparse
 import json
 import os
+import re
 import struct
 import sys
 
@@ -21,6 +35,7 @@ MAGIC = b"LAIKALUT"
 VERSION = 1
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
                        "Packages", "Looks", "Sources", "Looks", "Resources", "LUTs")
+MANIFEST = os.path.join(OUT_DIR, "looks.json")
 
 
 def clamp(x):
@@ -93,50 +108,99 @@ def build(fn):
     return texels
 
 
+# --- Catálogo -----------------------------------------------------------------
+
+def load_manifest():
+    if not os.path.exists(MANIFEST):
+        return {"version": 1, "lutSize": SIZE, "looks": []}
+    with open(MANIFEST, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_manifest(manifest):
+    with open(MANIFEST, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+
+def upsert(manifest, entry):
+    looks = manifest["looks"]
+    for i, look in enumerate(looks):
+        if look["id"] == entry["id"]:
+            looks[i] = entry
+            return
+    looks.append(entry)
+
+
 def generate():
     os.makedirs(OUT_DIR, exist_ok=True)
-    manifest = {"version": 1, "lutSize": SIZE, "looks": []}
+    manifest = load_manifest()
     for look_id, name, fn, grain in LOOKS:
         filename = look_id + ".lut"
         write_lut(os.path.join(OUT_DIR, filename), build(fn))
-        manifest["looks"].append({"id": look_id, "name": name, "lut": filename, "grain": grain})
+        upsert(manifest, {"id": look_id, "name": name, "lut": filename, "grain": grain})
         print("escrito", filename)
-    with open(os.path.join(OUT_DIR, "looks.json"), "w", encoding="utf-8") as f:
-        json.dump(manifest, f, ensure_ascii=False, indent=2)
-        f.write("\n")
-    print("escrito looks.json")
+    save_manifest(manifest)
+    print("actualizado looks.json")
 
+
+# --- Importación de .cube -------------------------------------------------------
 
 def read_cube(path):
+    """Devuelve (n, datos, dominio_min, dominio_max) de un .cube 3D."""
     n, data = None, []
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
+    dmin, dmax = (0.0, 0.0, 0.0), (1.0, 1.0, 1.0)
+    with open(path, encoding="utf-8-sig", errors="replace") as f:
+        for raw in f:
+            line = raw.split("#", 1)[0].strip()
+            if not line:
                 continue
-            key = line.split()[0]
+            key = line.split()[0].upper()
             if key == "LUT_3D_SIZE":
                 n = int(line.split()[1])
-            elif key in ("TITLE", "DOMAIN_MIN", "DOMAIN_MAX", "LUT_1D_SIZE"):
-                if key == "LUT_1D_SIZE":
-                    sys.exit("Solo se soportan .cube 3D")
-                continue
+            elif key == "DOMAIN_MIN":
+                dmin = tuple(float(v) for v in line.split()[1:4])
+            elif key == "DOMAIN_MAX":
+                dmax = tuple(float(v) for v in line.split()[1:4])
+            elif key in ("LUT_1D_SIZE", "LUT_1D_INPUT_RANGE"):
+                sys.exit("%s: tiene un LUT/shaper 1D; todavía no está soportado" % path)
+            elif re.match(r"^[A-Z_]+$", key):
+                continue  # TITLE, LUT_3D_INPUT_RANGE, etc.
             else:
                 data.append(tuple(float(v) for v in line.split()[:3]))
-    if n is None or len(data) != n ** 3:
-        sys.exit("Archivo .cube inválido")
-    return n, data
+    if n is None:
+        sys.exit("%s: falta LUT_3D_SIZE (¿es un LUT 3D .cube?)" % path)
+    if len(data) != n ** 3:
+        sys.exit("%s: se esperaban %d filas y hay %d" % (path, n ** 3, len(data)))
+    return n, data, dmin, dmax
 
 
-def convert(src, dst):
-    n, data = read_cube(src)
+def gamma24_decode(c):
+    return clamp(c) ** 2.4
+
+
+def gamma24_encode(c):
+    return clamp(c) ** (1 / 2.4)
+
+
+INPUTS = {
+    # nombre: (de la app al LUT, del LUT a la app)
+    "srgb": (lambda c: c, lambda c: c),
+    "rec709": (lambda c: gamma24_encode(srgb_to_linear(c)), lambda c: linear_to_srgb(gamma24_decode(c))),
+}
+
+
+def cube_sampler(path, input_space):
+    n, data, dmin, dmax = read_cube(path)
+    to_lut, from_lut = INPUTS[input_space]
 
     def at(ri, gi, bi):
         return data[ri + gi * n + bi * n * n]
 
     def sample(r, g, b):
-        # Interpolación trilineal en la grilla de origen.
-        coords = [c * (n - 1) for c in (r, g, b)]
+        rgb = [to_lut(c) for c in (r, g, b)]
+        # Normalizar al dominio del .cube y luego interpolar en la grilla (trilineal).
+        coords = [clamp((c - lo) / (hi - lo)) * (n - 1) for c, lo, hi in zip(rgb, dmin, dmax)]
         i0 = [min(int(c), n - 2) for c in coords]
         t = [c - i for c, i in zip(coords, i0)]
         out = [0.0, 0.0, 0.0]
@@ -148,16 +212,79 @@ def convert(src, dst):
                     if w:
                         v = at(i0[0] + dr, i0[1] + dg, i0[2] + db)
                         out = [o + w * c for o, c in zip(out, v)]
-        return tuple(clamp(o) for o in out)
+        return tuple(from_lut(clamp(o)) for o in out)
 
-    write_lut(dst, build(sample))
+    return sample
+
+
+def convert(src, dst, input_space):
+    write_lut(dst, build(cube_sampler(src, input_space)))
     print("escrito", dst)
 
 
-if __name__ == "__main__":
-    if len(sys.argv) == 1:
+def add(src, look_id, name, grain, input_space):
+    if not re.match(r"^[a-z0-9][a-z0-9-]*$", look_id):
+        sys.exit("--id: solo minúsculas, números y guiones (p. ej. 'kodak-calido')")
+    filename = look_id + ".lut"
+    convert(src, os.path.join(OUT_DIR, filename), input_space)
+    manifest = load_manifest()
+    upsert(manifest, {"id": look_id, "name": name, "lut": filename, "grain": grain,
+                      "source": os.path.basename(src), "input": input_space})
+    save_manifest(manifest)
+    print("agregado '%s' a looks.json" % look_id)
+
+
+def remove(look_id):
+    if look_id in {l[0] for l in LOOKS}:
+        sys.exit("'%s' es un Look propio generado por este script; sacalo de LOOKS" % look_id)
+    manifest = load_manifest()
+    entry = next((l for l in manifest["looks"] if l["id"] == look_id), None)
+    if entry is None:
+        sys.exit("no existe '%s'" % look_id)
+    manifest["looks"].remove(entry)
+    path = os.path.join(OUT_DIR, entry["lut"])
+    if os.path.exists(path):
+        os.remove(path)
+    save_manifest(manifest)
+    print("quitado", look_id)
+
+
+def list_looks():
+    for look in load_manifest()["looks"]:
+        origin = look.get("source", "propio")
+        print("%-16s %-20s grano %.2f  %s" % (look["id"], look["name"], look["grain"], origin))
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Catálogo de LUTs de Looks")
+    sub = parser.add_subparsers(dest="cmd")
+    sub.add_parser("generate")
+    p_add = sub.add_parser("add")
+    p_add.add_argument("cube")
+    p_add.add_argument("--id", required=True)
+    p_add.add_argument("--name", required=True)
+    p_add.add_argument("--grain", type=float, default=0.0)
+    p_add.add_argument("--input", choices=sorted(INPUTS), default="srgb")
+    p_rm = sub.add_parser("remove")
+    p_rm.add_argument("id")
+    sub.add_parser("list")
+    p_conv = sub.add_parser("convert")
+    p_conv.add_argument("cube")
+    p_conv.add_argument("out")
+    p_conv.add_argument("--input", choices=sorted(INPUTS), default="srgb")
+    args = parser.parse_args()
+
+    if args.cmd in (None, "generate"):
         generate()
-    elif len(sys.argv) == 4 and sys.argv[1] == "convert":
-        convert(sys.argv[2], sys.argv[3])
-    else:
-        sys.exit(__doc__)
+    elif args.cmd == "add":
+        add(args.cube, args.id, args.name, args.grain, args.input)
+    elif args.cmd == "remove":
+        remove(args.id)
+    elif args.cmd == "list":
+        list_looks()
+    elif args.cmd == "convert":
+        convert(args.cube, args.out, args.input)
+
+
+if __name__ == "__main__":
+    main()
