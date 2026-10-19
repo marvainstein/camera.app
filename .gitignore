@@ -4,3 +4,11 @@ re-out/
 re-inputs/
 
 .DS_Store
+
+# Builds
+build/
+.build/
+.swiftpm/
+DerivedData/
+xcuserdata/
+*.xcresult
