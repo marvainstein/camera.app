@@ -31,6 +31,7 @@ Packages/Looks/            Metal: LUT 3D 64³ RGBA16F + intensidad + nitidez/cla
                            película que generan su LUT en el dispositivo; recetas propias
 scripts/make_luts.py       catálogo de Looks: recetas y LUTs propios, importa .cube
 scripts/test.sh            corre todos los tests en el simulador
+tools/laboratorio/         Laboratorio de recetas: el motor de Looks en el navegador
 ```
 
 ### Requisitos
@@ -209,6 +210,24 @@ cada Look.
   efectos), como se comparten las recetas Ricoh por mensaje o en un foro. **Pegar** lo busca en el
   texto copiado (puede venir con texto alrededor; también acepta una entrada de `looks.json`) y
   acota cada valor al rango del editor.
+
+### Laboratorio de recetas (navegador)
+
+`tools/laboratorio/index.html` es un visor para armar recetas mirando el resultado, sin Xcode:
+abrirlo en el navegador (doble clic). Tiene el mismo motor de color que la app: `motor.js` es el
+port de `film_look()` y de los Looks de fórmula fija, y el shader WebGL hace lo mismo que
+`LookShaders.swift` (nitidez, claridad, LUT, viñeteo, grano) en el mismo orden.
+
+- Imagen: escenas sintéticas (atardecer, carta de color, el patrón de prueba de la app) o una foto
+  propia (subir, arrastrar o pegar).
+- Comparar antes/después arrastrando la línea, intensidad, todos los sliders del editor de la app.
+- Guardar, copiar y pegar recetas con el mismo texto que la app (`LookShare`): una receta armada
+  acá se pega en el iPhone con «Pegar receta», y al revés.
+- `catalogo.js` lo genera `make_luts.py generate` desde `looks.json`; no editarlo a mano.
+
+`node tools/laboratorio/verificar.js` compara el motor JS con las referencias de Python (las
+mismas de los tests de Swift) y con los `.lut` de fórmula fija: la diferencia máxima es el
+redondeo de float16.
 
 ### Pendiente / limitaciones conocidas
 

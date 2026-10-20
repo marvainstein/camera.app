@@ -47,6 +47,7 @@ OUT_DIR = os.path.join(ROOT, "Packages", "Looks", "Sources", "Looks", "Resources
 MANIFEST = os.path.join(OUT_DIR, "looks.json")
 REFERENCE_DIR = os.path.join(ROOT, "Packages", "Looks", "Tests", "LooksTests", "Resources")
 REFERENCE_SIZE = 17
+LAB_CATALOG = os.path.join(ROOT, "tools", "laboratorio", "catalogo.js")
 
 
 def clamp(x):
@@ -257,6 +258,13 @@ def save_manifest(manifest):
     with open(MANIFEST, "w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
         f.write("\n")
+    # El Laboratorio (tools/laboratorio) lee el catálogo de acá: abrirlo como archivo local no
+    # permite fetch de looks.json.
+    with open(LAB_CATALOG, "w", encoding="utf-8") as f:
+        f.write("// Generado por scripts/make_luts.py a partir de looks.json. No editar a mano.\n")
+        f.write("window.CATALOGO = ")
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+        f.write(";\n")
 
 
 def upsert(manifest, entry):

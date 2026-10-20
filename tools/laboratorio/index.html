@@ -1,0 +1,1027 @@
+<title>Laboratorio de recetas</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@400;500;600&display=swap">
+<style>
+  /* Una sola paleta oscura y neutra a propósito: el color se juzga sobre gris, como en un
+     laboratorio. Visor grande a la izquierda, editor de receta a la derecha (debajo en el teléfono). */
+  :root {
+    --bg: #141517;
+    --surface: #1c1d20;
+    --raised: #25272b;
+    --line: #34363b;
+    --fg: #e9e7e2;
+    --muted: #9a9ca2;
+    --accent: #d6a45e;
+    --accent-ink: #1b1408;
+    --danger: #e0786a;
+    --font-ui: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+    --font-num: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+    color-scheme: dark;
+  }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font: 15px/1.4 var(--font-ui);
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 12px;
+    box-sizing: border-box;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  button, input, textarea, select { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .app { display: flex; flex-direction: column; gap: 12px; height: 100%; min-height: 0; }
+  .bar { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; }
+  .bar h1 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: 0.01em; text-wrap: balance; }
+  .bar .sub { color: var(--muted); font-size: 13px; }
+  .sources { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+
+  .chip {
+    border: 1px solid var(--line); background: var(--surface); border-radius: 999px;
+    padding: 5px 12px; cursor: pointer; white-space: nowrap; font-size: 14px;
+  }
+  .chip:hover { border-color: var(--muted); }
+  .chip[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+
+  .layout { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; }
+  .stage { display: flex; flex-direction: column; gap: 10px; min-height: 0; min-width: 0; }
+  .viewer {
+    position: relative; flex: 1; min-height: 0; display: grid; place-items: center; overflow: hidden;
+    background: #0c0d0e; border-radius: 6px;
+  }
+  .viewer canvas { max-width: 100%; max-height: 100%; display: block; touch-action: none; }
+  .viewer.comparing canvas { cursor: ew-resize; }
+  .viewer .tag {
+    position: absolute; top: 10px; font: 500 11px var(--font-num); letter-spacing: 0.08em; text-transform: uppercase;
+    background: rgba(12, 13, 14, 0.7); color: var(--fg); padding: 3px 7px; border-radius: 4px; pointer-events: none;
+  }
+  .viewer .tag.left { left: 10px; }
+  .viewer .tag.right { right: 10px; }
+  .viewer.dragging::after {
+    content: "Soltá la foto"; position: absolute; inset: 12px; display: grid; place-items: center;
+    border: 2px dashed var(--accent); border-radius: 6px; background: rgba(20, 21, 23, 0.8); font-size: 18px;
+  }
+  .error { padding: 24px; max-width: 46ch; text-align: center; color: var(--muted); }
+
+  .stage-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+  .stage-tools .grow { flex: 1 1 200px; display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .stage-tools .grow input { flex: 1; min-width: 0; accent-color: var(--accent); }
+  .status { font: 12px var(--font-num); color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  .strip { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: thin; }
+  .look {
+    flex: none; display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+    border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 6px 12px 7px;
+    cursor: pointer; text-align: left;
+  }
+  .look:hover { border-color: var(--muted); }
+  .look[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+  .look .kind { font: 10px var(--font-num); letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.7; }
+  .look.mine .kind { color: var(--accent); opacity: 1; }
+  .look[aria-pressed="true"].mine .kind { color: #8a5a17; }
+
+  .panel {
+    min-height: 0; overflow-y: auto; background: var(--surface); border-radius: 6px; padding: 14px 16px 18px;
+    display: flex; flex-direction: column; gap: 16px;
+  }
+  .panel h2 {
+    margin: 0 0 6px; font: 500 11px var(--font-num); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted);
+  }
+  .name-row { display: flex; flex-direction: column; gap: 6px; }
+  .name-row input {
+    background: var(--raised); border: 1px solid var(--line); border-radius: 4px; padding: 7px 9px; font-size: 17px; font-weight: 500;
+  }
+  .origin { font-size: 13px; color: var(--muted); }
+  .origin b { color: var(--accent); font-weight: 500; }
+  .note { font-size: 13px; color: var(--muted); margin: 0; }
+
+  .group { display: flex; flex-direction: column; gap: 8px; }
+  .param { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 0 8px; }
+  .param label { font-size: 14px; }
+  .param .value {
+    font: 13px var(--font-num); font-variant-numeric: tabular-nums; background: none; border: 0; padding: 2px 0 2px 6px;
+    cursor: pointer; color: var(--fg); text-align: right; min-width: 6ch;
+  }
+  .param .value.neutral { color: var(--muted); }
+  .param input[type="range"] { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); margin: 2px 0 0; }
+  .toggle { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
+  .toggle input { accent-color: var(--accent); width: 16px; height: 16px; }
+  fieldset:disabled .param, fieldset:disabled .toggle { opacity: 0.4; }
+  fieldset { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+
+  .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .btn {
+    border: 1px solid var(--line); background: var(--raised); border-radius: 4px; padding: 8px 10px; cursor: pointer;
+    font-size: 14px; text-align: center;
+  }
+  .btn:hover:not(:disabled) { border-color: var(--muted); }
+  .btn:disabled { opacity: 0.4; cursor: default; }
+  .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; grid-column: 1 / -1; }
+  .btn.danger { color: var(--danger); }
+  .btn.wide { grid-column: 1 / -1; }
+  .confirm { grid-column: 1 / -1; display: flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); }
+  .confirm .btn { flex: none; }
+
+  .share textarea {
+    width: 100%; min-height: 150px; resize: vertical; background: var(--raised); border: 1px solid var(--line); border-radius: 4px;
+    padding: 8px; font: 12px/1.45 var(--font-num);
+  }
+  .toast { font-size: 13px; color: var(--accent); min-height: 1.4em; margin: 0; }
+  .file-input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+
+  @media (max-width: 900px) {
+    html, body { height: auto; }
+    .app { height: auto; }
+    .layout { grid-template-columns: minmax(0, 1fr); }
+    .viewer { flex: none; display: block; }
+    .viewer canvas { width: 100%; height: auto; max-height: 70vh; object-fit: contain; }
+    .panel { overflow: visible; }
+    .sources { margin-left: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="app">
+  <header class="bar">
+    <h1>Laboratorio de recetas</h1>
+    <span class="sub">El mismo motor de color que la app de cámara, para armar recetas mirando el resultado.</span>
+    <div class="sources" role="group" aria-label="Imagen">
+      <button class="chip" id="escena-atardecer" data-scene="atardecer" aria-pressed="true">Atardecer</button>
+      <button class="chip" id="escena-carta" data-scene="carta" aria-pressed="false">Carta de color</button>
+      <button class="chip" id="escena-patron" data-scene="patron" aria-pressed="false">Patrón de la app</button>
+      <label class="chip" for="foto" id="foto-label">Subir foto…</label>
+      <input class="file-input" type="file" id="foto" accept="image/*">
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="stage" aria-label="Visor">
+      <div class="viewer" id="viewer">
+        <canvas id="lienzo" aria-label="Imagen con la receta aplicada"></canvas>
+        <span class="tag left" id="tag-antes" hidden>Antes</span>
+        <span class="tag right" id="tag-despues" hidden>Después</span>
+      </div>
+      <div class="stage-tools">
+        <button class="chip" id="comparar" aria-pressed="false">Comparar antes / después</button>
+        <div class="grow">
+          <label for="intensidad">Intensidad</label>
+          <input type="range" id="intensidad" min="0" max="1" step="0.01" value="1">
+          <span class="status" id="intensidad-valor">100 %</span>
+        </div>
+        <span class="status" id="estado">Preparando…</span>
+      </div>
+      <nav class="strip" id="tira" aria-label="Looks"></nav>
+    </section>
+
+    <aside class="panel" aria-label="Receta">
+      <div class="name-row">
+        <h2>Receta</h2>
+        <input id="nombre" type="text" maxlength="40" aria-label="Nombre de la receta">
+        <span class="origin" id="origen"></span>
+      </div>
+      <p class="note" id="nota-lut" hidden>Este Look sale de un LUT fijo (.lut), no de una receta: no tiene parámetros.
+        Elegí otro o empezá una receta nueva.</p>
+      <fieldset id="campos">
+        <label class="toggle"><input type="checkbox" id="mono"> Blanco y negro</label>
+        <div id="grupos"></div>
+        <div class="group" id="efectos">
+          <h2>Efectos</h2>
+        </div>
+      </fieldset>
+      <div class="actions">
+        <button class="btn primary" id="guardar">Guardar receta</button>
+        <button class="btn" id="guardar-nueva">Guardar como nueva</button>
+        <button class="btn" id="original">Volver al original</button>
+        <button class="btn" id="nueva">Receta nueva</button>
+        <button class="btn" id="copiar">Copiar receta</button>
+        <button class="btn wide" id="pegar">Pegar receta…</button>
+        <button class="btn wide" id="descargar" hidden>Descargar foto (JPEG)</button>
+        <button class="btn danger wide" id="borrar" hidden>Borrar receta</button>
+        <div class="confirm" id="confirmar-borrar" hidden>
+          <span>¿Borrar <b id="borrar-nombre"></b>?</span>
+          <button class="btn danger" id="borrar-si">Borrar</button>
+          <button class="btn" id="borrar-no">No</button>
+        </div>
+      </div>
+      <p class="toast" id="aviso" role="status"></p>
+      <div class="share" id="compartir" hidden>
+        <h2 id="compartir-titulo">Receta como texto</h2>
+        <textarea id="texto" spellcheck="false" aria-labelledby="compartir-titulo"></textarea>
+        <div class="actions">
+          <button class="btn" id="importar">Importar</button>
+          <button class="btn" id="cerrar-texto">Cerrar</button>
+        </div>
+      </div>
+      <p class="note" id="donde"></p>
+    </aside>
+  </main>
+</div>
+
+<script src="catalogo.js"></script>
+<script src="motor.js"></script>
+<script>
+(function () {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const M = window.Motor;
+  const BUNDLED = (window.CATALOGO && window.CATALOGO.looks) || [];
+  const DRAFT_SIZE = 25, FULL_SIZE = 64;      // como CameraModel.draftLUTSize y LookCatalog.lutSize
+  const CLARITY_SHORT_SIDE = 48;               // LookRenderer.clarityShortSide
+  const GRAIN_SCALE = 1.5;                      // LookParameters.grainScale
+  const MAX_SIDE = 3000;
+  const STORAGE_KEY = "laboratorio-recetas";
+
+  // ---------- Estado ----------
+  let userLooks = [];
+  let store = null;            // db del artifact, o null → este navegador
+  let selectedId = null;
+  let draft = null;            // { name, recipe|null, grain, effects, editingId, base }
+  let intensity = 1;
+  let compare = false, split = 0.5;
+  let sceneName = "atardecer";
+
+  const allLooks = () => BUNDLED.concat(userLooks);
+  const isMine = (id) => userLooks.some((l) => l.id === id);
+  const clone = (x) => JSON.parse(JSON.stringify(x));
+  const newId = () => "propia-" + Array.from(crypto.getRandomValues(new Uint8Array(4)), (b) => b.toString(16).padStart(2, "0")).join("");
+
+  function draftFrom(look, editingId) {
+    return {
+      name: editingId ? look.name : look.recipe ? look.name + " (mía)" : look.name,
+      recipe: look.recipe ? M.clampRecipe(look.recipe) : null,
+      grain: look.grain || 0,
+      effects: { nitidez: 0, claridad: 0, vineteo: 0, ...(look.effects || {}) },
+      editingId,
+      base: look,
+    };
+  }
+
+  function draftLook(id) {
+    const e = draft.effects;
+    const look = { id, name: draft.name.trim() || "Receta propia", recipe: { ...draft.recipe }, grain: round(draft.grain) };
+    if (e.nitidez || e.claridad || e.vineteo) look.effects = { nitidez: round(e.nitidez), claridad: round(e.claridad), vineteo: round(e.vineteo) };
+    for (const k in look.recipe) look.recipe[k] = round(look.recipe[k]);
+    return look;
+  }
+  const round = (x) => Math.round(x * 1000) / 1000;
+
+  // ---------- WebGL ----------
+  const canvas = $("lienzo");
+  const gl = canvas.getContext("webgl2", { preserveDrawingBuffer: true, antialias: false, premultipliedAlpha: false });
+  let programs = null, sourceTex = null, lutTex = null, blurTex = null, blurFbo = null, dummyTex = null;
+  let floatTargets = false, sourceSize = [1, 1], lutSize = 2;
+
+  const VERTEX = `#version 300 es
+    uniform bool uFlip;
+    out vec2 vUv;
+    out vec2 vFrame;
+    void main() {
+      vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+      gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+      vFrame = vec2(p.x, uFlip ? p.y : 1.0 - p.y);
+      vUv = vFrame;
+    }`;
+
+  // Mismo orden y mismas cuentas que look_fragment en LookShaders.swift.
+  const FRAGMENT = `#version 300 es
+    precision highp float;
+    precision highp int;
+    precision highp sampler2D;
+    precision highp sampler3D;
+    in vec2 vUv;
+    in vec2 vFrame;
+    out vec4 outColor;
+    uniform sampler2D uSource;
+    uniform sampler3D uLut;
+    uniform sampler2D uBlur;
+    uniform float uIntensity, uGrain, uGrainCell, uLutSize, uSharp, uClarity, uVignette, uSplit, uSplitWidth;
+    uniform uint uSeed;
+    uniform int uHasBlur;
+    const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
+
+    uint pcg(uint v) {
+      uint state = v * 747796405u + 2891336453u;
+      uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+      return (word >> 22u) ^ word;
+    }
+    float uniform01(uint v) { return (float(pcg(v)) + 1.0) / 4294967296.0; }
+    float gaussian(uvec2 cell, uint seed) {
+      uint h = pcg(cell.x + pcg(cell.y + pcg(seed)));
+      return sqrt(-2.0 * log(uniform01(h))) * cos(6.28318530718 * uniform01(h ^ 0x9E3779B9u));
+    }
+
+    void main() {
+      vec3 rgb = clamp(texture(uSource, vUv).rgb, 0.0, 1.0);
+      if (uSplit > 0.0 && abs(vFrame.x - uSplit) < uSplitWidth) { outColor = vec4(0.92, 0.91, 0.88, 1.0); return; }
+      if (vFrame.x < uSplit) { outColor = vec4(rgb, 1.0); return; }
+
+      if (uSharp != 0.0) {
+        vec2 texel = 1.0 / vec2(textureSize(uSource, 0));
+        vec3 around = (texture(uSource, vUv + vec2(texel.x, 0.0)).rgb + texture(uSource, vUv - vec2(texel.x, 0.0)).rgb
+                     + texture(uSource, vUv + vec2(0.0, texel.y)).rgb + texture(uSource, vUv - vec2(0.0, texel.y)).rgb) * 0.25;
+        float detail = dot(rgb - clamp(around, 0.0, 1.0), kLuma);
+        rgb = clamp(rgb + detail * (uSharp > 0.0 ? 1.5 * uSharp : uSharp), 0.0, 1.0);
+      }
+      if (uClarity != 0.0 && uHasBlur != 0) {
+        vec2 t = 0.5 / vec2(textureSize(uBlur, 0));
+        vec3 local = (texture(uBlur, vUv + t).rgb + texture(uBlur, vUv - t).rgb
+                    + texture(uBlur, vUv + vec2(t.x, -t.y)).rgb + texture(uBlur, vUv + vec2(-t.x, t.y)).rgb) * 0.25;
+        float luma = dot(rgb, kLuma);
+        rgb = clamp(rgb + (luma - dot(local, kLuma)) * uClarity * 4.0 * luma * (1.0 - luma), 0.0, 1.0);
+      }
+      if (uIntensity > 0.0) {
+        vec3 coord = rgb * ((uLutSize - 1.0) / uLutSize) + 0.5 / uLutSize;
+        rgb = mix(rgb, texture(uLut, coord).rgb, uIntensity);
+      }
+      if (uVignette != 0.0) {
+        float r = length(vFrame - 0.5) * 1.41421356;
+        rgb = clamp(rgb * (1.0 - 0.5 * uVignette * smoothstep(0.25, 1.0, r)), 0.0, 1.0);
+      }
+      if (uGrain > 0.0) {
+        uvec2 cell = uvec2(gl_FragCoord.xy / max(uGrainCell, 1.0));
+        float luma = dot(rgb, kLuma);
+        rgb += gaussian(cell, uSeed) * uGrain * 0.1 * (0.3 + 0.7 * (4.0 * luma * (1.0 - luma)));
+      }
+      outColor = vec4(clamp(rgb, 0.0, 1.0), 1.0);
+    }`;
+
+  // look_downsample: promedio de 8×8 muestras en el área de cada píxel reducido (base de la claridad).
+  const DOWNSAMPLE = `#version 300 es
+    precision highp float;
+    in vec2 vUv;
+    in vec2 vFrame;
+    out vec4 outColor;
+    uniform sampler2D uSource;
+    void main() {
+      vec2 footprint = abs(vec2(dFdx(vUv.x), dFdy(vUv.y)));
+      vec3 sum = vec3(0.0);
+      for (int j = 0; j < 8; j++) {
+        for (int i = 0; i < 8; i++) {
+          vec2 offset = ((vec2(float(i), float(j)) + 0.5) / 8.0 - 0.5) * footprint;
+          sum += clamp(texture(uSource, vUv + offset).rgb, 0.0, 1.0);
+        }
+      }
+      outColor = vec4(sum / 64.0, 1.0);
+    }`;
+
+  function compile(vs, fs) {
+    const program = gl.createProgram();
+    for (const [type, src] of [[gl.VERTEX_SHADER, vs], [gl.FRAGMENT_SHADER, fs]]) {
+      const shader = gl.createShader(type);
+      gl.shaderSource(shader, src);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader));
+      gl.attachShader(program, shader);
+    }
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
+    const uniforms = {};
+    const count = gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS);
+    for (let i = 0; i < count; i++) {
+      const info = gl.getActiveUniform(program, i);
+      uniforms[info.name] = gl.getUniformLocation(program, info.name);
+    }
+    return { program, uniforms };
+  }
+
+  function texture2D(filter) {
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return tex;
+  }
+
+  function initGL() {
+    if (!gl) throw new Error("Este navegador no tiene WebGL 2.");
+    floatTargets = !!gl.getExtension("EXT_color_buffer_float");
+    programs = { main: compile(VERTEX, FRAGMENT), down: compile(VERTEX, DOWNSAMPLE) };
+    gl.bindVertexArray(gl.createVertexArray());
+    sourceTex = texture2D(gl.LINEAR);
+    blurTex = texture2D(gl.LINEAR);
+    blurFbo = gl.createFramebuffer();
+    dummyTex = texture2D(gl.NEAREST);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
+    lutTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_3D, lutTex);
+    for (const p of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER]) gl.texParameteri(gl.TEXTURE_3D, p, gl.LINEAR);
+    for (const p of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) gl.texParameteri(gl.TEXTURE_3D, p, gl.CLAMP_TO_EDGE);
+    uploadLUT(M.makeLUT(M.FORMULAS.identidad, 2), 2);
+  }
+
+  function uploadLUT(data, size) {
+    gl.bindTexture(gl.TEXTURE_3D, lutTex);
+    gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA16F, size, size, size, 0, gl.RGBA, gl.FLOAT, data);
+    lutSize = size;
+  }
+
+  function uploadSource(image, width, height) {
+    gl.bindTexture(gl.TEXTURE_2D, sourceTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+    sourceSize = [width, height];
+    canvas.width = width;
+    canvas.height = height;
+    // Base de la claridad: la fuente reducida a 48 px de lado corto.
+    const scale = CLARITY_SHORT_SIDE / Math.min(width, height);
+    const bw = Math.max(1, Math.round(width * scale)), bh = Math.max(1, Math.round(height * scale));
+    gl.bindTexture(gl.TEXTURE_2D, blurTex);
+    if (floatTargets) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, bw, bh, 0, gl.RGBA, gl.HALF_FLOAT, null);
+    else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, bw, bh, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, blurFbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, blurTex, 0);
+    gl.viewport(0, 0, bw, bh);
+    const down = programs.down;
+    gl.useProgram(down.program);
+    gl.uniform1i(down.uniforms.uFlip, 1);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, sourceTex);
+    gl.uniform1i(down.uniforms.uSource, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+
+  let seed = 7;
+  function render() {
+    if (!programs) return;
+    const fx = currentEffects();
+    const main = programs.main, u = main.uniforms;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, sourceSize[0], sourceSize[1]);
+    gl.useProgram(main.program);
+    gl.uniform1i(u.uFlip, 0);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, sourceTex); gl.uniform1i(u.uSource, 0);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_3D, lutTex); gl.uniform1i(u.uLut, 1);
+    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, fx.claridad ? blurTex : dummyTex); gl.uniform1i(u.uBlur, 2);
+    gl.uniform1f(u.uIntensity, intensity);
+    gl.uniform1f(u.uGrain, fx.grain);
+    gl.uniform1f(u.uGrainCell, GRAIN_SCALE * Math.min(sourceSize[0], sourceSize[1]) / 1000);
+    gl.uniform1ui(u.uSeed, seed);
+    gl.uniform1f(u.uLutSize, lutSize);
+    gl.uniform1f(u.uSharp, fx.nitidez);
+    gl.uniform1f(u.uClarity, fx.claridad);
+    gl.uniform1f(u.uVignette, fx.vineteo);
+    gl.uniform1i(u.uHasBlur, fx.claridad ? 1 : 0);
+    gl.uniform1f(u.uSplit, compare ? split : 0);
+    gl.uniform1f(u.uSplitWidth, 1.5 / sourceSize[0] * Math.max(1, sourceSize[0] / (canvas.clientWidth || sourceSize[0])));
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  function currentEffects() {
+    if (!draft) return { grain: 0, nitidez: 0, claridad: 0, vineteo: 0 };
+    return { grain: draft.grain, ...draft.effects };
+  }
+
+  // ---------- LUT del borrador ----------
+  const lutCache = new Map();
+  let fullTimer = null;
+
+  function currentFunction() {
+    if (!draft) return M.FORMULAS.identidad;
+    if (draft.recipe) { const r = draft.recipe; return (a, b, c) => M.filmLook(a, b, c, r); }
+    return M.lookFunction(draft.base) || M.FORMULAS.identidad;
+  }
+
+  function lutKey() {
+    return draft && draft.recipe ? JSON.stringify(draft.recipe) : "formula:" + (draft ? draft.base.id : "identidad");
+  }
+
+  // Como CameraModel.scheduleDraftLUT: uno chico enseguida y el de 64³ cuando los sliders se quedan quietos.
+  function refreshLUT(quick) {
+    clearTimeout(fullTimer);
+    const key = lutKey();
+    if (lutCache.has(key)) {
+      uploadLUT(lutCache.get(key), FULL_SIZE);
+      render();
+      setStatus(`LUT ${FULL_SIZE}³ · en caché`);
+      return;
+    }
+    if (quick) {
+      const t0 = performance.now();
+      uploadLUT(M.makeLUT(currentFunction(), DRAFT_SIZE), DRAFT_SIZE);
+      render();
+      setStatus(`LUT ${DRAFT_SIZE}³ · ${Math.round(performance.now() - t0)} ms`);
+    }
+    fullTimer = setTimeout(() => {
+      if (lutKey() !== key) return;
+      const t0 = performance.now();
+      const data = M.makeLUT(currentFunction(), FULL_SIZE);
+      lutCache.set(key, data);
+      if (lutCache.size > 24) lutCache.delete(lutCache.keys().next().value);
+      uploadLUT(data, FULL_SIZE);
+      render();
+      setStatus(`LUT ${FULL_SIZE}³ · ${Math.round(performance.now() - t0)} ms`);
+    }, quick ? 300 : 0);
+  }
+
+  const setStatus = (text) => { $("estado").textContent = text; };
+
+  // ---------- Escenas ----------
+  function makeCanvas(w, h) {
+    const c = document.createElement("canvas");
+    c.width = w; c.height = h;
+    return c;
+  }
+
+  // Port de App/TestPattern.swift.
+  function patron() {
+    const w = 1080, h = 1920, c = makeCanvas(w, h), ctx = c.getContext("2d");
+    const img = ctx.createImageData(w, h), px = img.data;
+    const patches = [[0.45, 0.32, 0.26], [0.76, 0.58, 0.50], [0.36, 0.48, 0.61], [0.35, 0.42, 0.26],
+                     [0.85, 0.47, 0.15], [0.20, 0.25, 0.55], [0.75, 0.32, 0.38], [0.55, 0.70, 0.25]];
+    const hsv = (hue, s, v) => {
+      const hh = hue * 6, f = hh - Math.floor(hh);
+      const p = v * (1 - s), q = v * (1 - s * f), t = v * (1 - s * (1 - f));
+      switch (Math.trunc(hh) % 6) {
+        case 0: return [v, t, p]; case 1: return [q, v, p]; case 2: return [p, v, t];
+        case 3: return [p, q, v]; case 4: return [t, p, v]; default: return [v, p, q];
+      }
+    };
+    for (let y = 0; y < h; y++) {
+      const v = y / h;
+      for (let x = 0; x < w; x++) {
+        const u = x / (w - 1);
+        const rgb = v < 0.6 ? hsv(u, 0.85, 1 - (v / 0.6) * 0.9) : v < 0.75 ? [u, u, u]
+          : patches[Math.min(Math.trunc(u * 4), 3) + (v < 0.875 ? 0 : 4)];
+        const i = (y * w + x) * 4;
+        px[i] = Math.trunc(rgb[0] * 255); px[i + 1] = Math.trunc(rgb[1] * 255); px[i + 2] = Math.trunc(rgb[2] * 255); px[i + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    return c;
+  }
+
+  // Carta de 24 parches (valores sRGB publicados de la ColorChecker clásica), rampa de grises y barrido de tono.
+  function carta() {
+    const w = 1500, h = 1000, c = makeCanvas(w, h), ctx = c.getContext("2d");
+    ctx.fillStyle = "#2b2b2b"; ctx.fillRect(0, 0, w, h);
+    const patches = [
+      "#735244", "#c29682", "#627a9d", "#576c43", "#8580b1", "#67bdaa",
+      "#d67e2c", "#505ba6", "#c15a63", "#5e3c6c", "#9dbc40", "#e0a32e",
+      "#383d96", "#469449", "#af363c", "#e7c71f", "#bb5695", "#0885a1",
+      "#f3f3f2", "#c8c8c8", "#a0a0a0", "#7a7a79", "#555555", "#343434",
+    ];
+    const size = 200, gap = 26, x0 = (w - (6 * size + 5 * gap)) / 2, y0 = 40;
+    patches.forEach((color, i) => {
+      ctx.fillStyle = color;
+      ctx.fillRect(x0 + (i % 6) * (size + gap), y0 + Math.floor(i / 6) * (size + gap), size, size);
+    });
+    const ramp = ctx.createLinearGradient(x0, 0, w - x0, 0);
+    ramp.addColorStop(0, "#000"); ramp.addColorStop(1, "#fff");
+    ctx.fillStyle = ramp; ctx.fillRect(x0, 880, w - 2 * x0, 40);
+    for (let x = 0; x < w - 2 * x0; x++) {
+      ctx.fillStyle = `hsl(${(x / (w - 2 * x0)) * 360}, 85%, 50%)`;
+      ctx.fillRect(x0 + x, 930, 1, 40);
+    }
+    return c;
+  }
+
+  // Paisaje sintético: cielo de atardecer, sol, cerros con verdes, lago y pasto con textura fina.
+  function atardecer() {
+    const w = 1600, h = 1067, c = makeCanvas(w, h), ctx = c.getContext("2d");
+    let rand = 12345;
+    const rnd = () => ((rand = (rand * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+    const sky = ctx.createLinearGradient(0, 0, 0, 620);
+    sky.addColorStop(0, "#27477d"); sky.addColorStop(0.45, "#7a7fa6"); sky.addColorStop(0.75, "#e6a172"); sky.addColorStop(1, "#f6d49c");
+    ctx.fillStyle = sky; ctx.fillRect(0, 0, w, 760);
+    const sun = ctx.createRadialGradient(1080, 520, 10, 1080, 520, 380);
+    sun.addColorStop(0, "rgba(255,247,222,1)"); sun.addColorStop(0.08, "rgba(255,236,190,0.95)"); sun.addColorStop(0.35, "rgba(255,190,120,0.35)"); sun.addColorStop(1, "rgba(255,170,110,0)");
+    ctx.fillStyle = sun; ctx.fillRect(0, 0, w, 700);
+    // Nubes finas.
+    for (let i = 0; i < 9; i++) {
+      ctx.fillStyle = `rgba(255, ${200 + i * 4}, ${170 + i * 5}, 0.18)`;
+      ctx.beginPath(); ctx.ellipse(150 + i * 170, 180 + (i % 3) * 60, 160, 14, -0.03, 0, Math.PI * 2); ctx.fill();
+    }
+    const hill = (base, amp, freq, phase, color) => {
+      ctx.fillStyle = color; ctx.beginPath(); ctx.moveTo(0, h);
+      for (let x = 0; x <= w; x += 8) ctx.lineTo(x, base - amp * Math.sin(x * freq + phase) - amp * 0.4 * Math.sin(x * freq * 2.7 + phase * 2));
+      ctx.lineTo(w, h); ctx.fill();
+    };
+    hill(600, 40, 0.004, 1.2, "#6d6a86");
+    hill(640, 55, 0.006, 0.3, "#4f5d48");
+    // Lago con el reflejo del cielo.
+    const lake = ctx.createLinearGradient(0, 660, 0, 780);
+    lake.addColorStop(0, "#d9a27a"); lake.addColorStop(1, "#4a5f86");
+    ctx.fillStyle = lake; ctx.fillRect(0, 660, w, 120);
+    ctx.fillStyle = "rgba(255,240,205,0.55)"; ctx.fillRect(1040, 662, 80, 110);
+    hill(820, 30, 0.003, 2.0, "#47652f");
+    // Pasto en primer plano con textura (para ver nitidez y claridad).
+    const grass = ctx.createLinearGradient(0, 760, 0, h);
+    grass.addColorStop(0, "#6f8c3a"); grass.addColorStop(1, "#2e3f1b");
+    ctx.fillStyle = grass; ctx.fillRect(0, 800, w, h - 800);
+    for (let i = 0; i < 5200; i++) {
+      const x = rnd() * w, y = 790 + rnd() * (h - 790), len = 6 + rnd() * 22 * ((y - 760) / 300);
+      ctx.strokeStyle = `hsl(${78 + rnd() * 30}, ${35 + rnd() * 30}%, ${18 + rnd() * 30}%)`;
+      ctx.lineWidth = 1 + rnd() * 1.5;
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + (rnd() - 0.5) * 8, y - len); ctx.stroke();
+    }
+    // Flores rojas y amarillas.
+    for (let i = 0; i < 160; i++) {
+      ctx.fillStyle = i % 3 ? "#c8402f" : "#e7c13a";
+      ctx.beginPath(); ctx.arc(rnd() * w, 860 + rnd() * 200, 3 + rnd() * 4, 0, Math.PI * 2); ctx.fill();
+    }
+    // Casita con techo rojo y ventana iluminada (tonos cálidos y bordes duros).
+    ctx.fillStyle = "#d9c7a8"; ctx.fillRect(300, 700, 150, 95);
+    ctx.fillStyle = "#9b3428"; ctx.beginPath(); ctx.moveTo(285, 704); ctx.lineTo(375, 640); ctx.lineTo(465, 704); ctx.fill();
+    ctx.fillStyle = "#ffd98a"; ctx.fillRect(330, 730, 30, 26);
+    ctx.fillStyle = "#3b2a22"; ctx.fillRect(395, 735, 30, 60);
+    return c;
+  }
+
+  const SCENES = { atardecer, carta, patron };
+  const sceneCache = {};
+
+  function showScene(name) {
+    sceneName = name;
+    const c = sceneCache[name] || (sceneCache[name] = SCENES[name]());
+    uploadSource(c, c.width, c.height);
+    for (const b of document.querySelectorAll("[data-scene]")) b.setAttribute("aria-pressed", String(b.dataset.scene === name));
+    $("foto-label").textContent = "Subir foto…";
+    render();
+  }
+
+  async function showPhoto(file) {
+    try {
+      let bitmap = await createImageBitmap(file);
+      const max = Math.min(MAX_SIDE, gl.getParameter(gl.MAX_TEXTURE_SIZE));
+      const scale = Math.min(1, max / Math.max(bitmap.width, bitmap.height));
+      if (scale < 1) {
+        bitmap = await createImageBitmap(bitmap, { resizeWidth: Math.round(bitmap.width * scale), resizeHeight: Math.round(bitmap.height * scale), resizeQuality: "high" });
+      }
+      uploadSource(bitmap, bitmap.width, bitmap.height);
+      sceneName = null;
+      for (const b of document.querySelectorAll("[data-scene]")) b.setAttribute("aria-pressed", "false");
+      $("foto-label").textContent = "Otra foto…";
+      render();
+      toast(`Foto cargada (${bitmap.width} × ${bitmap.height})`);
+    } catch (e) {
+      toast("No se pudo abrir esa imagen. Probá con un JPEG, PNG o HEIC que el navegador soporte.");
+    }
+  }
+
+  // ---------- Interfaz ----------
+  function buildControls() {
+    const groups = $("grupos");
+    for (const group of ["Tono", "Color", "Virado"]) {
+      const box = document.createElement("div");
+      box.className = "group";
+      box.innerHTML = `<h2>${group}</h2>`;
+      for (const p of M.PARAMETROS.filter((p) => p.group === group)) box.appendChild(slider(p.id, p.name, p.min, p.max, M.NEUTRA[p.id], "recipe"));
+      groups.appendChild(box);
+    }
+    const fx = $("efectos");
+    fx.appendChild(slider("grain", "Grano", 0, 1, 0, "grain"));
+    fx.appendChild(slider("nitidez", "Nitidez", -1, 1, 0, "effects"));
+    fx.appendChild(slider("claridad", "Claridad", -1, 1, 0, "effects"));
+    fx.appendChild(slider("vineteo", "Viñeteo", -1, 1, 0, "effects"));
+  }
+
+  const sliders = {};
+  function slider(key, label, min, max, neutral, kind) {
+    const row = document.createElement("div");
+    row.className = "param";
+    const id = "p-" + key;
+    row.innerHTML = `<label for="${id}">${label}</label><button class="value" type="button" title="Volver a ${neutral}"></button>
+      <input type="range" id="${id}" min="${min}" max="${max}" step="${(max - min) / 400}">`;
+    const input = row.querySelector("input"), value = row.querySelector(".value");
+    const get = () => kind === "recipe" ? draft.recipe[key] : kind === "grain" ? draft.grain : draft.effects[key];
+    const set = (v) => {
+      if (kind === "recipe") draft.recipe[key] = v;
+      else if (kind === "grain") draft.grain = v;
+      else draft.effects[key] = v;
+    };
+    const show = () => {
+      const v = get();
+      input.value = v;
+      value.textContent = v.toFixed(2);
+      value.classList.toggle("neutral", Math.abs(v - neutral) < 1e-9);
+    };
+    input.addEventListener("input", () => { set(Number(input.value)); show(); changed(kind === "recipe"); });
+    value.addEventListener("click", () => { set(neutral); show(); changed(kind === "recipe"); });
+    sliders[key] = { show, kind };
+    return row;
+  }
+
+  function changed(recipeChanged) {
+    if (recipeChanged) refreshLUT(true);
+    else render();
+    updateDirty();
+  }
+
+  function refreshPanel() {
+    const editable = !!(draft && draft.recipe);
+    $("campos").disabled = !editable;
+    $("nota-lut").hidden = editable;
+    $("nombre").value = draft ? draft.name : "";
+    $("nombre").disabled = !editable;
+    $("mono").checked = editable && !!draft.recipe.mono;
+    for (const key in sliders) {
+      if (sliders[key].kind === "recipe" && !editable) continue;
+      if (draft) sliders[key].show();
+    }
+    const mine = draft && draft.editingId;
+    $("guardar").textContent = mine ? "Guardar cambios" : "Guardar como receta propia";
+    $("guardar").disabled = !editable;
+    $("guardar-nueva").disabled = !mine;
+    $("copiar").disabled = !editable;
+    $("original").disabled = !(draft && draft.base);
+    $("borrar").hidden = !mine;
+    $("confirmar-borrar").hidden = true;
+    updateDirty();
+  }
+
+  function updateDirty() {
+    if (!draft) return;
+    const base = draft.base;
+    let text;
+    if (!draft.recipe) text = `<b>${escapeHTML(base.name)}</b> · LUT fijo de la app`;
+    else if (draft.editingId) text = `Receta propia${isDirty() ? " · <b>cambios sin guardar</b>" : ""}`;
+    else if (base.id === "__nueva") text = "Receta nueva, desde la receta neutra";
+    else text = `Copia de <b>${escapeHTML(base.name)}</b>${isDirty() ? " · modificada" : ""}`;
+    $("origen").innerHTML = text;
+  }
+
+  function isDirty() {
+    const base = draft.base;
+    if (!base || !draft.recipe) return false;
+    const ref = draftFrom(base, draft.editingId);
+    return JSON.stringify([ref.recipe, ref.grain, ref.effects, ref.name]) !== JSON.stringify([draft.recipe, draft.grain, draft.effects, draft.name]);
+  }
+
+  const escapeHTML = (s) => String(s).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+
+  function renderStrip() {
+    const strip = $("tira");
+    strip.textContent = "";
+    for (const look of allLooks()) {
+      const b = document.createElement("button");
+      b.className = "look" + (isMine(look.id) ? " mine" : "");
+      b.setAttribute("aria-pressed", String(look.id === selectedId));
+      const kind = isMine(look.id) ? "propia" : look.recipe ? "receta" : ".lut";
+      const name = document.createElement("span");
+      name.textContent = look.name;
+      const k = document.createElement("span");
+      k.className = "kind";
+      k.textContent = kind;
+      b.append(k, name);
+      b.addEventListener("click", () => select(look.id));
+      strip.appendChild(b);
+    }
+  }
+
+  function select(id) {
+    const look = allLooks().find((l) => l.id === id);
+    if (!look) return;
+    selectedId = id;
+    draft = draftFrom(look, isMine(id) ? id : null);
+    renderStrip();
+    refreshPanel();
+    refreshLUT(false);
+    try { localStorage.setItem(STORAGE_KEY + ":elegido", id); } catch (e) {}
+  }
+
+  function newRecipe() {
+    selectedId = null;
+    draft = draftFrom({ id: "__nueva", name: "Receta nueva", recipe: M.NEUTRA, grain: 0 }, null);
+    draft.name = "Receta nueva";
+    renderStrip();
+    refreshPanel();
+    refreshLUT(false);
+  }
+
+  let toastTimer = null;
+  function toast(text) {
+    $("aviso").textContent = text;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { $("aviso").textContent = ""; }, 5000);
+  }
+
+  // ---------- Guardado ----------
+  async function persist(look) {
+    if (store) {
+      await store.collection("recetas").doc(look.id).set({ ...look, actualizada: new Date().toISOString() });
+    } else {
+      const i = userLooks.findIndex((l) => l.id === look.id);
+      if (i >= 0) userLooks[i] = look; else userLooks.push(look);
+      saveLocal();
+    }
+  }
+
+  function saveLocal() {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(userLooks)); } catch (e) {}
+  }
+
+  async function save(asNew) {
+    if (!draft || !draft.recipe) return;
+    const id = (!asNew && draft.editingId) || newId();
+    const look = draftLook(id);
+    try {
+      await persist(look);
+      if (store) {
+        const i = userLooks.findIndex((l) => l.id === id);
+        if (i >= 0) userLooks[i] = look; else userLooks.push(look);
+      }
+      selectedId = id;
+      draft = draftFrom(look, id);
+      renderStrip();
+      refreshPanel();
+      toast(`Guardada: ${look.name}`);
+    } catch (e) {
+      toast("No se pudo guardar: " + (e && e.message ? e.message : "error desconocido") + ". Probá de nuevo.");
+    }
+  }
+
+  async function remove() {
+    const id = draft && draft.editingId;
+    if (!id) return;
+    const look = userLooks.find((l) => l.id === id);
+    try {
+      if (store) await store.collection("recetas").doc(id).delete();
+      userLooks = userLooks.filter((l) => l.id !== id);
+      if (!store) saveLocal();
+      toast(`Borrada: ${look ? look.name : id}`);
+      select(BUNDLED.some((l) => l.id === "dorado-200") ? "dorado-200" : BUNDLED[0].id);
+    } catch (e) {
+      toast("No se pudo borrar. Probá de nuevo.");
+    }
+  }
+
+  function importText(text) {
+    const parsed = M.parseShared(text);
+    if (!parsed) {
+      toast("No encontré una receta en ese texto. Tiene que tener un bloque { … } con \"recipe\".");
+      return false;
+    }
+    selectedId = null;
+    draft = { ...parsed, editingId: null, base: { id: "__importada", name: parsed.name, recipe: parsed.recipe, grain: parsed.grain, effects: parsed.effects } };
+    renderStrip();
+    refreshPanel();
+    $("origen").innerHTML = "Receta importada · sin guardar";
+    refreshLUT(false);
+    toast(`Importada: ${parsed.name}. Guardala para que quede en la lista.`);
+    return true;
+  }
+
+  async function connectStore(restoreId) {
+    try {
+      const local = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+      if (Array.isArray(local)) userLooks = local.filter((l) => l && l.id && l.recipe);
+    } catch (e) {}
+    renderStrip();
+    if (restoreId && isMine(restoreId)) select(restoreId);
+    $("donde").textContent = "Tus recetas se guardan en este navegador.";
+    if (!window.claude || !window.claude.use) return;
+    const db = await window.claude.use("db");
+    if (!db) return;
+    store = db;
+    $("donde").textContent = "Tus recetas se guardan en el Laboratorio: las ves en cualquier dispositivo y Claude las puede leer para pasarlas a la app.";
+    let first = true;
+    db.collection("recetas").onSnapshot((snap) => {
+      userLooks = snap.docs.map((d) => d.data()).filter((l) => l && l.id && l.recipe)
+        .map((l) => { const { actualizada, ...look } = l; return look; })
+        .sort((a, b) => a.name.localeCompare(b.name, "es"));
+      renderStrip();
+      if (first && restoreId && isMine(restoreId) && selectedId !== restoreId) select(restoreId);
+      first = false;
+      if (draft && draft.editingId && !userLooks.some((l) => l.id === draft.editingId)) refreshPanel();
+    }, () => {
+      store = null;
+      $("donde").textContent = "No se pudo conectar el guardado compartido: las recetas quedan en este navegador.";
+    });
+  }
+
+  // ---------- Eventos ----------
+  function wire() {
+    for (const b of document.querySelectorAll("[data-scene]")) b.addEventListener("click", () => showScene(b.dataset.scene));
+    $("foto").addEventListener("change", (e) => { const f = e.target.files[0]; if (f) showPhoto(f); e.target.value = ""; });
+
+    const viewer = $("viewer");
+    viewer.addEventListener("dragover", (e) => { e.preventDefault(); viewer.classList.add("dragging"); });
+    viewer.addEventListener("dragleave", () => viewer.classList.remove("dragging"));
+    viewer.addEventListener("drop", (e) => {
+      e.preventDefault();
+      viewer.classList.remove("dragging");
+      const f = [...e.dataTransfer.files].find((f) => f.type.startsWith("image/"));
+      if (f) showPhoto(f);
+    });
+
+    document.addEventListener("paste", (e) => {
+      const file = [...(e.clipboardData ? e.clipboardData.files : [])].find((f) => f.type.startsWith("image/"));
+      if (file) { e.preventDefault(); showPhoto(file); return; }
+      const target = e.target;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
+      const text = e.clipboardData && e.clipboardData.getData("text");
+      if (text && text.includes("recipe")) { e.preventDefault(); importText(text); }
+    });
+
+    $("comparar").addEventListener("click", () => {
+      compare = !compare;
+      $("comparar").setAttribute("aria-pressed", String(compare));
+      viewer.classList.toggle("comparing", compare);
+      $("tag-antes").hidden = $("tag-despues").hidden = !compare;
+      render();
+    });
+    let dragging = false;
+    const moveSplit = (e) => {
+      const r = canvas.getBoundingClientRect();
+      split = Math.min(0.98, Math.max(0.02, (e.clientX - r.left) / r.width));
+      render();
+    };
+    canvas.addEventListener("pointerdown", (e) => { if (!compare) return; dragging = true; canvas.setPointerCapture(e.pointerId); moveSplit(e); });
+    canvas.addEventListener("pointermove", (e) => { if (dragging) moveSplit(e); });
+    canvas.addEventListener("pointerup", () => { dragging = false; });
+
+    $("intensidad").addEventListener("input", (e) => {
+      intensity = Number(e.target.value);
+      $("intensidad-valor").textContent = Math.round(intensity * 100) + " %";
+      render();
+    });
+
+    $("nombre").addEventListener("input", (e) => { if (draft) { draft.name = e.target.value; updateDirty(); } });
+    $("mono").addEventListener("change", (e) => { if (draft && draft.recipe) { draft.recipe.mono = e.target.checked ? 1 : 0; changed(true); } });
+    $("guardar").addEventListener("click", () => save(false));
+    $("guardar-nueva").addEventListener("click", () => save(true));
+    $("original").addEventListener("click", () => {
+      if (!draft || !draft.base) return;
+      const base = draft.base;
+      draft = base.id === "__importada" || base.id === "__nueva" ? { ...draftFrom(base, null), name: base.name, base } : draftFrom(base, draft.editingId);
+      refreshPanel();
+      refreshLUT(false);
+    });
+    $("nueva").addEventListener("click", newRecipe);
+    $("copiar").addEventListener("click", async () => {
+      if (!draft || !draft.recipe) return;
+      const text = M.shareText(draftLook("compartida"));
+      showText(text, false);
+      try {
+        await navigator.clipboard.writeText(text);
+        toast("Receta copiada. Pegala en un mensaje, o en la app con «Pegar receta».");
+      } catch (e) {
+        $("texto").select();
+        toast("Seleccioné el texto: copialo con ⌘C / Ctrl+C.");
+      }
+    });
+    $("pegar").addEventListener("click", () => { showText("", true); $("texto").focus(); });
+    $("importar").addEventListener("click", () => { if (importText($("texto").value)) $("compartir").hidden = true; });
+    $("cerrar-texto").addEventListener("click", () => { $("compartir").hidden = true; });
+    $("borrar").addEventListener("click", () => {
+      $("borrar-nombre").textContent = draft.name;
+      $("confirmar-borrar").hidden = false;
+    });
+    $("borrar-no").addEventListener("click", () => { $("confirmar-borrar").hidden = true; });
+    $("borrar-si").addEventListener("click", remove);
+    window.addEventListener("resize", render);
+  }
+
+  function showText(text, importing) {
+    $("compartir").hidden = false;
+    $("texto").value = text;
+    $("importar").hidden = !importing;
+    $("compartir-titulo").textContent = importing ? "Pegá la receta acá" : "Receta como texto";
+  }
+
+  async function connectDownloads() {
+    if (!window.claude || !window.claude.use) return;
+    const downloads = await window.claude.use("downloads");
+    if (!downloads) return;
+    const button = $("descargar");
+    button.hidden = false;
+    button.addEventListener("click", () => {
+      render();
+      canvas.toBlob(async (blob) => {
+        if (!blob) { toast("No se pudo generar el JPEG."); return; }
+        const name = (draft ? draft.name : "foto").replace(/[^\p{L}\p{N} _-]+/gu, "").trim() || "foto";
+        try {
+          await downloads.save({ filename: `${name}.jpg`, data: blob });
+          toast("Foto descargada.");
+        } catch (e) {
+          if (e && e.code !== "declined") toast("No se pudo descargar en esta vista.");
+        }
+      }, "image/jpeg", 0.92);
+    });
+  }
+
+  // ---------- Arranque ----------
+  try {
+    initGL();
+  } catch (e) {
+    $("viewer").innerHTML = `<p class="error">No se pudo iniciar el visor: ${escapeHTML(e.message)}</p>`;
+    setStatus("Sin WebGL 2");
+    return;
+  }
+  buildControls();
+  wire();
+  showScene("atardecer");
+  let start = null;
+  try { start = localStorage.getItem(STORAGE_KEY + ":elegido"); } catch (e) {}
+  renderStrip();
+  select(BUNDLED.some((l) => l.id === start) ? start : "dorado-200");
+  connectStore(start);
+  connectDownloads();
+})();
+</script>
