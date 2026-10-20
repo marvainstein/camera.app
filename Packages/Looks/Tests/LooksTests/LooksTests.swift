@@ -58,13 +58,96 @@ private func maxChannelDifference(_ a: [UInt8], _ b: [UInt8]) -> Int {
         let looks = try LookCatalog.bundled()
         #expect(Set(["identidad", "bn-neutro", "calido"]).isSubset(of: looks.map(\.id)))
         for look in looks {
-            #expect(try LookCatalog.lut(for: look).size == 64)
+            #expect(try LookCatalog.lut(for: look, cacheDirectory: nil).size == 64)
         }
     }
 
     @Test func bundledIdentityMatchesGeneratedIdentity() throws {
         let identity = try #require(try LookCatalog.bundled().first { $0.id == "identidad" })
         #expect(try LookCatalog.lut(for: identity) == LUT3D.identity(size: 64))
+    }
+}
+
+/// Referencias 17³ que escribe `scripts/make_luts.py export-reference` con `film_look()`.
+private func pythonReference(_ id: String) throws -> LUT3D {
+    let url = try #require(Bundle.module.url(forResource: id, withExtension: "lut"))
+    return try LUT3D(contentsOf: url)
+}
+
+private let recipeLookIDs = ["dorado-200", "retrato-400", "ambar-800", "negativo-diario", "diapositiva",
+                             "plata-400", "cine-verde"]
+
+@Suite struct FilmRecipeTests {
+    @Test(arguments: recipeLookIDs)
+    func swiftMatchesPythonReference(id: String) throws {
+        let look = try #require(try LookCatalog.bundled().first { $0.id == id })
+        let recipe = try #require(look.recipe)
+        let reference = try pythonReference(id)
+        let generated = recipe.makeLUT(size: reference.size)
+        let expected = reference.floatTexels, actual = generated.floatTexels
+        var worst: Float = 0
+        for i in expected.indices {
+            worst = max(worst, abs(expected[i] - actual[i]))
+        }
+        #expect(worst <= 1 / 1024)
+    }
+
+    @Test func everyRecipeHasAReference() throws {
+        let withRecipe = try LookCatalog.bundled().filter { $0.recipe != nil }.map(\.id)
+        #expect(withRecipe == recipeLookIDs)
+        for id in withRecipe {
+            #expect(try pythonReference(id).size == 17)
+        }
+    }
+
+    @Test func optionalFieldsDefaultToZero() throws {
+        let json = """
+        {"calidez": 1, "altas_luces": 0.1, "contraste": 0.2, "negros": 0.03, "blancos": 0.97,
+         "verdes_oliva": 4, "verdes_apagados": 0.1, "azules_apagados": 0.1, "rojos_amarillos": 0,
+         "saturacion": 1, "sombras_frias": 1, "luces_amarillas": 1}
+        """
+        let recipe = try JSONDecoder().decode(FilmRecipe.self, from: Data(json.utf8))
+        #expect(recipe.tinte == 0 && recipe.brillo == 0 && recipe.mono == 0)
+        let roundTrip = try JSONDecoder().decode(FilmRecipe.self, from: JSONEncoder().encode(recipe))
+        #expect(roundTrip == recipe)
+    }
+
+    @Test func pythonModuloAndColorsys() {
+        #expect(FilmMath.pyMod(-30, 360) == 330)
+        #expect(FilmMath.pyMod(370, 360) == 10)
+        #expect(FilmMath.pyMod(-1e-20, 360) == 360)  // igual que Python
+        #expect(FilmMath.pyMod(-0.5, 1).sign == .plus)
+        let (h, s, v) = FilmMath.rgbToHSV(0.2, 0.4, 0.8)
+        let (r, g, b) = FilmMath.hsvToRGB(h, s, v)
+        #expect(abs(r - 0.2) < 1e-12 && abs(g - 0.4) < 1e-12 && abs(b - 0.8) < 1e-12)
+        #expect(FilmMath.rgbToHSV(0.5, 0.5, 0.5) == (0, 0, 0.5))
+    }
+
+    @Test func stableHashDependsOnlyOnValues() throws {
+        let recipe = try #require(try LookCatalog.bundled().first { $0.id == "dorado-200" }?.recipe)
+        var other = recipe
+        #expect(other.stableHash == recipe.stableHash)
+        other.calidez += 0.01
+        #expect(other.stableHash != recipe.stableHash)
+        #expect(recipe.stableHash.count == 16)
+    }
+
+    @Test func catalogCachesGeneratedLUTOnDisk() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LooksTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let look = try #require(try LookCatalog.bundled().first { $0.id == "cine-verde" })
+        let lut = try LookCatalog.lut(for: look, cacheDirectory: directory)
+        let key = LookCatalog.cacheKey(id: look.id, recipe: try #require(look.recipe))
+        let file = directory.appendingPathComponent(key + ".lut")
+        #expect(try LUT3D(contentsOf: file) == lut)
+        #expect(lut.size == 64)
+    }
+
+    @Test func lookWithoutRecipeOrFileFails() {
+        #expect(throws: LookCatalog.Error.noLUT("vacio")) {
+            try LookCatalog.lut(for: Look(id: "vacio", name: "Vacío"))
+        }
     }
 }
 
@@ -137,7 +220,7 @@ private let hasMetal = MTLCreateSystemDefaultDevice() != nil
 
     @Test(arguments: ["bn-neutro", "plata-400"])
     func blackAndWhiteLookIsNeutral(id: String) throws {
-        let bw = try LookCatalog.lut(for: #require(try LookCatalog.bundled().first { $0.id == id }))
+        let bw = try LookCatalog.lut(for: #require(try LookCatalog.bundled().first { $0.id == id }), cacheDirectory: nil)
         let output = try render(renderer, lut: bw, parameters: LookParameters())
         for i in stride(from: 0, to: output.count, by: 4) {
             #expect(abs(Int(output[i]) - Int(output[i + 1])) <= 1)

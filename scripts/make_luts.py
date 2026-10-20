@@ -3,7 +3,15 @@
 
 Uso:
   scripts/make_luts.py generate
-      Regenera los Looks propios (fórmulas de este archivo). Respeta los importados.
+      Regenera los Looks propios. Respeta los importados. Los de película se guardan como receta
+      (parámetros de film_look) en looks.json y la app genera el LUT en el dispositivo; solo los
+      de fórmula fija (identidad, B/N, cálido) se escriben como .lut.
+  scripts/make_luts.py export-lut [ID ...] [--out DIR]
+      Escribe a mano el .lut 64³ de Looks propios (por defecto todos), para comparar. No toca
+      el catálogo; DIR por defecto es build/luts.
+  scripts/make_luts.py export-reference
+      Escribe referencias 17³ de cada receta en Packages/Looks/Tests/LooksTests/Resources/,
+      contra las que el test compara el generador en Swift.
   scripts/make_luts.py add ARCHIVO.cube --id ID --name "Nombre" [--grain 0.2] [--input srgb|rec709]
       Importa un LUT 3D .cube (cualquier tamaño, con DOMAIN_MIN/MAX), lo remuestrea a 64³,
       lo adapta al espacio de entrada de la app y lo agrega/actualiza en looks.json.
@@ -34,9 +42,11 @@ import sys
 SIZE = 64
 MAGIC = b"LAIKALUT"
 VERSION = 1
-OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
-                       "Packages", "Looks", "Sources", "Looks", "Resources", "LUTs")
+ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+OUT_DIR = os.path.join(ROOT, "Packages", "Looks", "Sources", "Looks", "Resources", "LUTs")
 MANIFEST = os.path.join(OUT_DIR, "looks.json")
+REFERENCE_DIR = os.path.join(ROOT, "Packages", "Looks", "Tests", "LooksTests", "Resources")
+REFERENCE_SIZE = 17
 
 
 def clamp(x):
@@ -91,7 +101,9 @@ def hue_weight(deg, center, width):
 
 def film_look(r, g, b, p):
     """Receta propia de emulación de negativo color. `p` son los parámetros de cada película
-    (los mismos sliders de la vista previa)."""
+    (los mismos sliders de la vista previa). Portada 1:1 a Swift en
+    Packages/Looks/Sources/Looks/FilmRecipe.swift: si se cambia, cambiar las dos, subir
+    FilmRecipe.generatorVersion y correr `export-reference`."""
     warm = p["calidez"]
     lr = srgb_to_linear(r) * (1 + 0.05 * warm)
     lg = srgb_to_linear(g) * (1 + 0.012 * p.get("tinte", 0))   # + verde, − magenta
@@ -182,42 +194,41 @@ CINE_VERDE = dict(calidez=0.28, tinte=1, brillo=2, altas_luces=0.36, contraste=-
                   rojos_amarillos=-0.05, saturacion=1.0, sombras_frias=2.0, luces_amarillas=0.8)
 
 
-def look_dorado_200(r, g, b):
-    return film_look(r, g, b, DORADO_200)
-
-
-def look_retrato_400(r, g, b):
-    return film_look(r, g, b, RETRATO_400)
-
-
 LOOKS = [
-    # (id, nombre visible, función, grano sugerido)
+    # (id, nombre visible, función o receta de film_look, grano sugerido)
     ("identidad", "Natural", look_identidad, 0.0),
     ("bn-neutro", "B/N Neutro", look_bn_neutro, 0.35),
     ("calido", "Cálido", look_calido, 0.15),
-    ("dorado-200", "Dorado 200", look_dorado_200, 0.3),
-    ("retrato-400", "Retrato 400", look_retrato_400, 0.2),
-    ("ambar-800", "Ámbar 800", lambda r, g, b: film_look(r, g, b, AMBAR_800), 0.3),
-    ("negativo-diario", "Negativo Diario", lambda r, g, b: film_look(r, g, b, NEGATIVO_DIARIO), 0.2),
-    ("diapositiva", "Diapositiva", lambda r, g, b: film_look(r, g, b, DIAPOSITIVA), 0.1),
-    ("plata-400", "Plata 400", lambda r, g, b: film_look(r, g, b, PLATA_400), 0.6),
-    ("cine-verde", "Cine Verde", lambda r, g, b: film_look(r, g, b, CINE_VERDE), 0.0),
+    ("dorado-200", "Dorado 200", DORADO_200, 0.3),
+    ("retrato-400", "Retrato 400", RETRATO_400, 0.2),
+    ("ambar-800", "Ámbar 800", AMBAR_800, 0.3),
+    ("negativo-diario", "Negativo Diario", NEGATIVO_DIARIO, 0.2),
+    ("diapositiva", "Diapositiva", DIAPOSITIVA, 0.1),
+    ("plata-400", "Plata 400", PLATA_400, 0.6),
+    ("cine-verde", "Cine Verde", CINE_VERDE, 0.0),
 ]
 
 
-def write_lut(path, texels):
+def look_fn(spec):
+    """Función (r, g, b) de un Look de LOOKS: la fórmula, o film_look con la receta."""
+    if callable(spec):
+        return spec
+    return lambda r, g, b: film_look(r, g, b, spec)
+
+
+def write_lut(path, texels, size=SIZE):
     """texels: lista plana [r, g, b, a, ...] con N³ entradas en orden R→G→B."""
     with open(path, "wb") as f:
-        f.write(MAGIC + struct.pack("<II", VERSION, SIZE))
+        f.write(MAGIC + struct.pack("<II", VERSION, size))
         f.write(struct.pack("<%de" % len(texels), *texels))
 
 
-def build(fn):
-    step = 1.0 / (SIZE - 1)
+def build(fn, size=SIZE):
+    step = 1.0 / (size - 1)
     texels = []
-    for bi in range(SIZE):
-        for gi in range(SIZE):
-            for ri in range(SIZE):
+    for bi in range(size):
+        for gi in range(size):
+            for ri in range(size):
                 texels.extend(fn(ri * step, gi * step, bi * step))
                 texels.append(1.0)
     return texels
@@ -250,13 +261,42 @@ def upsert(manifest, entry):
 def generate():
     os.makedirs(OUT_DIR, exist_ok=True)
     manifest = load_manifest()
-    for look_id, name, fn, grain in LOOKS:
+    for look_id, name, spec, grain in LOOKS:
         filename = look_id + ".lut"
-        write_lut(os.path.join(OUT_DIR, filename), build(fn))
-        upsert(manifest, {"id": look_id, "name": name, "lut": filename, "grain": grain})
-        print("escrito", filename)
+        path = os.path.join(OUT_DIR, filename)
+        if callable(spec):
+            write_lut(path, build(spec))
+            upsert(manifest, {"id": look_id, "name": name, "lut": filename, "grain": grain})
+            print("escrito", filename)
+        else:
+            upsert(manifest, {"id": look_id, "name": name, "recipe": dict(spec), "grain": grain})
+            if os.path.exists(path):
+                os.remove(path)  # .lut de antes de las recetas: ya no se usa
+                print("quitado", filename)
+            print("receta", look_id)
     save_manifest(manifest)
     print("actualizado looks.json")
+
+
+def export_lut(ids, out_dir):
+    specs = {look_id: spec for look_id, _, spec, _ in LOOKS}
+    for look_id in ids or specs:
+        if look_id not in specs:
+            sys.exit("'%s' no es un Look propio (ver LOOKS)" % look_id)
+        os.makedirs(out_dir, exist_ok=True)
+        path = os.path.join(out_dir, look_id + ".lut")
+        write_lut(path, build(look_fn(specs[look_id])))
+        print("escrito", path)
+
+
+def export_reference():
+    os.makedirs(REFERENCE_DIR, exist_ok=True)
+    for look_id, _, spec, _ in LOOKS:
+        if callable(spec):
+            continue
+        path = os.path.join(REFERENCE_DIR, look_id + ".lut")
+        write_lut(path, build(look_fn(spec), REFERENCE_SIZE), REFERENCE_SIZE)
+        print("escrito", os.path.relpath(path, ROOT))
 
 
 # --- Importación de .cube -------------------------------------------------------
@@ -357,8 +397,8 @@ def remove(look_id):
     if entry is None:
         sys.exit("no existe '%s'" % look_id)
     manifest["looks"].remove(entry)
-    path = os.path.join(OUT_DIR, entry["lut"])
-    if os.path.exists(path):
+    path = os.path.join(OUT_DIR, entry["lut"]) if "lut" in entry else None
+    if path and os.path.exists(path):
         os.remove(path)
     save_manifest(manifest)
     print("quitado", look_id)
@@ -366,7 +406,7 @@ def remove(look_id):
 
 def list_looks():
     for look in load_manifest()["looks"]:
-        origin = look.get("source", "propio")
+        origin = look.get("source", "receta" if "recipe" in look else "propio")
         print("%-16s %-20s grano %.2f  %s" % (look["id"], look["name"], look["grain"], origin))
 
 
@@ -374,6 +414,10 @@ def main():
     parser = argparse.ArgumentParser(description="Catálogo de LUTs de Looks")
     sub = parser.add_subparsers(dest="cmd")
     sub.add_parser("generate")
+    p_exp = sub.add_parser("export-lut")
+    p_exp.add_argument("ids", nargs="*")
+    p_exp.add_argument("--out", default=os.path.join(ROOT, "build", "luts"))
+    sub.add_parser("export-reference")
     p_add = sub.add_parser("add")
     p_add.add_argument("cube")
     p_add.add_argument("--id", required=True)
@@ -391,6 +435,10 @@ def main():
 
     if args.cmd in (None, "generate"):
         generate()
+    elif args.cmd == "export-lut":
+        export_lut(args.ids, args.out)
+    elif args.cmd == "export-reference":
+        export_reference()
     elif args.cmd == "add":
         add(args.cube, args.id, args.name, args.grain, args.input)
     elif args.cmd == "remove":
