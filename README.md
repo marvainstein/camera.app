@@ -244,6 +244,4 @@ redondeo de float16.
 - Edición no destructiva con `PHAdjustmentData` (paso 3), LensSim/bokeh (paso 4) y el resto de
   docs/04 todavía no están.
 - Captura en un iPhone real no verificada todavía (solo simulador).
-- Los efectos y el editor de recetas no se compilaron ni probaron todavía en Xcode (se escribieron
-  en un entorno sin Swift): correr `scripts/test.sh` antes de mergear.
 - Halation y bloom (resto de Effects en docs/04) todavía no están.

@@ -229,6 +229,8 @@ private let recipeLookIDs = ["dorado-200", "retrato-400", "ambar-800", "negativo
         let looks = try LookCatalog.bundled()
         let plata = try #require(looks.first { $0.id == "plata-400" })
         #expect(plata.effects == LookEffects(claridad: 0.5, vineteo: 0.25))
+        let cineLook = try #require(looks.first { $0.id == "cine" })
+        #expect(cineLook.effects?.halation == 0.45 && cineLook.effects?.bloom == 0.2)
         let cine = try #require(looks.first { $0.id == "cine-verde" })
         #expect(cine.effects?.nitidez == -0.5)
         #expect(looks.first { $0.id == "dorado-200" }?.effects == nil)
@@ -488,6 +490,31 @@ private let hasMetal = MTLCreateSystemDefaultDevice() != nil
         #expect(Int(softer[inside]) - Int(softer[outside]) < 40 - 10)
         // Lejos del borde, nada.
         #expect(abs(Int(output[(32 * 256 + 20) * 4]) - 110) <= 1)
+    }
+
+    @Test func halationTintsAroundHighlightsOnly() throws {
+        // Fondo oscuro con un cuadrado blanco: la halation enrojece alrededor del cuadrado y no lejos.
+        var pixels = [UInt8](repeating: 255, count: 256 * 64 * 4)
+        for y in 0..<64 {
+            for x in 0..<256 {
+                let i = (y * 256 + x) * 4
+                let inside = (120..<136).contains(x) && (24..<40).contains(y)
+                pixels[i] = inside ? 255 : 30
+                pixels[i + 1] = pixels[i]
+                pixels[i + 2] = pixels[i]
+            }
+        }
+        let output = try render(renderer, lut: nil, parameters: LookParameters(effects: LookEffects(halation: 1)),
+                                pixels: pixels)
+        let near = (32 * 256 + 137) * 4, far = (32 * 256 + 10) * 4
+        #expect(Int(output[near]) > Int(output[near + 2]) + 8)  // más rojo que azul
+        #expect(Int(output[near]) > 30 + 8)
+        #expect(abs(Int(output[far]) - 30) <= 1 && abs(Int(output[far + 2]) - 30) <= 1)
+        // Sin luces fuertes, ni halation ni bloom cambian nada.
+        let gray = [UInt8](repeating: 128, count: 256 * 64 * 4)
+        let flat = try render(renderer, lut: nil,
+                              parameters: LookParameters(effects: LookEffects(halation: 1, bloom: 1)), pixels: gray)
+        #expect(maxChannelDifference(gray, flat) <= 1)
     }
 
     @Test func rendersFullCGImage() throws {

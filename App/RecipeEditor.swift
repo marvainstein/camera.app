@@ -40,6 +40,8 @@ struct RecipeEditor: View {
                 RecipeSlider(title: "Nitidez", value: double(draft.effects.nitidez), range: -1...1, neutral: 0)
                 RecipeSlider(title: "Claridad", value: double(draft.effects.claridad), range: -1...1, neutral: 0)
                 RecipeSlider(title: "Viñeteo", value: double(draft.effects.vineteo), range: -1...1, neutral: 0)
+                RecipeSlider(title: "Halation", value: double(draft.effects.halation), range: 0...1, neutral: 0)
+                RecipeSlider(title: "Bloom", value: double(draft.effects.bloom), range: 0...1, neutral: 0)
             } header: {
                 Text("Efectos")
             } footer: {
