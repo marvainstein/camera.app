@@ -2,6 +2,8 @@
 
 Estudio de Leica LUX (iOS) y app de cámara alternativa propia.
 
+Para sumarse al proyecto, ver [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Documentación
 
 | Doc | Contenido |
