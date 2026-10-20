@@ -62,6 +62,13 @@
     }
   }
 
+  // tone_offset: desvío de color (sin cambiar la luminancia) del tono `deg` a saturación plena.
+  function toneOffset(deg) {
+    const [tr, tg, tb] = hsvToRgb(pyMod(deg, 360) / 360, 1.0, 1.0);
+    const y = 0.2126 * tr + 0.7152 * tg + 0.0722 * tb;
+    return [tr - y, tg - y, tb - y];
+  }
+
   // film_look(r, g, b, p): `p` con las claves de looks.json.
   function filmLook(r, g, b, p) {
     const warm = p.calidez;
@@ -73,7 +80,15 @@
     lg = (lg / (1 + k * lg)) * (1 + k);
     lb = (lb / (1 + k * lb)) * (1 + k);
     if (p.mono) {
-      const y = linearToSrgb(0.2126 * lr + 0.7152 * lg + 0.0722 * lb);
+      // Filtro de color delante del B/N.
+      let wr = 0.2126, wg = 0.7152, wb = 0.0722;
+      if (p.filtro) {
+        const [fr, fg, fb] = hsvToRgb(pyMod(p.filtro_tono || 0, 360) / 360, clamp(p.filtro), 1.0);
+        wr *= fr; wg *= fg; wb *= fb;
+        const total = wr + wg + wb;
+        wr /= total; wg /= total; wb /= total;
+      }
+      const y = linearToSrgb(wr * lr + wg * lg + wb * lb);
       lr = lg = lb = srgbToLinear(y);
     }
     let er = linearToSrgb(lr), eg = linearToSrgb(lg), eb = linearToSrgb(lb);
@@ -94,12 +109,17 @@
 
     const luma = 0.2126 * er + 0.7152 * eg + 0.0722 * eb;
     const shadow = (1 - luma) ** 2, light = luma ** 2;
-    const finish = (c, tintShadow, tintLight) => {
+    // Virado partido: un tono en las sombras y otro en las luces.
+    let tonedShadow = [0.0, 0.0, 0.0], tonedLight = [0.0, 0.0, 0.0];
+    if (p.virado_sombras) tonedShadow = toneOffset(p.virado_sombras_tono || 0).map((d) => 0.12 * p.virado_sombras * d * (1 - luma));
+    if (p.virado_luces) tonedLight = toneOffset(p.virado_luces_tono || 0).map((d) => 0.12 * p.virado_luces * d * luma);
+    const finish = (i, c, tintShadow, tintLight) => {
       c = contrast(c, p.contraste);
       c = p.negros + (p.blancos - p.negros) * c;
-      return clamp(c + tintShadow * p.sombras_frias * shadow + tintLight * p.luces_amarillas * light);
+      return clamp(c + tintShadow * p.sombras_frias * shadow + tintLight * p.luces_amarillas * light
+                   + tonedShadow[i] + tonedLight[i]);
     };
-    return [finish(er, -0.006, 0.015), finish(eg, 0.006, 0.008), finish(eb, 0.004, -0.02)];
+    return [finish(0, er, -0.006, 0.015), finish(1, eg, 0.006, 0.008), finish(2, eb, 0.004, -0.02)];
   }
 
   // Looks de fórmula fija (los que la app trae como .lut).
@@ -162,12 +182,19 @@
     { id: "azules_apagados", name: "Azules apagados", group: "Color", min: -0.5, max: 1 },
     { id: "sombras_frias", name: "Sombras frías", group: "Virado", min: -2, max: 3 },
     { id: "luces_amarillas", name: "Luces amarillas", group: "Virado", min: -2, max: 3 },
+    { id: "virado_sombras", name: "Virado de sombras", group: "Virado", min: 0, max: 2 },
+    { id: "virado_sombras_tono", name: "Tono de sombras (°)", group: "Virado", min: 0, max: 360 },
+    { id: "virado_luces", name: "Virado de luces", group: "Virado", min: 0, max: 2 },
+    { id: "virado_luces_tono", name: "Tono de luces (°)", group: "Virado", min: 0, max: 360 },
+    { id: "filtro", name: "Filtro de color", group: "B/N", min: 0, max: 1 },
+    { id: "filtro_tono", name: "Tono del filtro (°)", group: "B/N", min: 0, max: 360 },
   ];
 
   const NEUTRA = {
     calidez: 0, tinte: 0, brillo: 0, altas_luces: 0, contraste: 0, negros: 0, blancos: 1,
     verdes_oliva: 0, verdes_apagados: 0, azules_apagados: 0, rojos_amarillos: 0, saturacion: 1,
-    sombras_frias: 0, luces_amarillas: 0, mono: 0,
+    sombras_frias: 0, luces_amarillas: 0, mono: 0, filtro: 0, filtro_tono: 0, virado_sombras: 0,
+    virado_sombras_tono: 0, virado_luces: 0, virado_luces_tono: 0,
   };
 
   // Receta completa con cada valor en su rango (como FilmRecipe.clamped).

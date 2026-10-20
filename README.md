@@ -127,11 +127,16 @@ cosas:
 - `"recipe": {…}`: **receta de película**, los parámetros de `film_look()` (calidez, tinte, brillo,
   altas_luces, contraste, negros, blancos, verdes_oliva, verdes_apagados, azules_apagados,
   rojos_amarillos, saturacion, sombras_frias, luces_amarillas, mono; tinte, brillo y mono son
-  opcionales). La app genera el LUT 64³ en el dispositivo (`FilmRecipe.swift`, port 1:1 del script
+  opcionales; también lo son el **filtro de color para B/N**, `filtro` 0…1 y `filtro_tono` en
+  grados, y el **virado partido**, `virado_sombras`/`virado_luces` 0…2 con su `_tono` en grados). La app genera el LUT 64³ en el dispositivo (`FilmRecipe.swift`, port 1:1 del script
   en `Double`, en paralelo por planos) la primera vez que se elige el Look, y lo cachea en memoria y
   en `Library/Caches/Looks/` con clave id + hash de la receta + versión del generador. Unos 25 ms
   en un Mac en release. Son: **Dorado 200**, **Retrato 400**, **Ámbar 800**, **Negativo Diario**,
-  **Diapositiva**, **Plata 400** y **Cine Verde**.
+  **Diapositiva**, **Plata 400** y **Cine Verde**, más 23 estilos clásicos de laboratorio y de cámara
+  diseñados desde su referencia fotográfica (película, papel o proceso): Estándar, Clásico,
+  Contemporáneo, Vívido, Puro, Latón, Azul, Verde Azulado, Cine, Cine Suave, Blanqueo, Documental,
+  Retrato Cálido, B/N Alto Contraste, Plata Suave, Selenio, Sepia, Centenario y B/N con filtro
+  amarillo, naranja, rojo, verde y azul.
 - `"lut": "archivo.lut"`: LUT precalculado en el bundle. Los de fórmula fija de
   `scripts/make_luts.py` (**Natural** = identidad, **B/N Neutro** = luminancia Rec.709 + curva S
   suave, **Cálido** = balance cálido en luz lineal, sombras levantadas, +8 % saturación) y los

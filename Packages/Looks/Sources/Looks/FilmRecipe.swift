@@ -25,14 +25,24 @@ public struct FilmRecipe: Sendable, Hashable, Codable {
     public var lucesAmarillas: Double
     /// Distinto de 0: blanco y negro.
     public var mono: Double
+    /// Filtro de color delante del B/N: fuerza 0…1 y tono en grados (0 rojo, 60 amarillo…).
+    public var filtro: Double
+    public var filtroTono: Double
+    /// Virado partido: fuerza y tono (grados) en las sombras y en las luces.
+    public var viradoSombras: Double
+    public var viradoSombrasTono: Double
+    public var viradoLuces: Double
+    public var viradoLucesTono: Double
 
     /// Sube cuando cambia la fórmula de `apply`, para invalidar los LUTs cacheados.
-    public static let generatorVersion = 1
+    public static let generatorVersion = 2
 
     public init(calidez: Double, tinte: Double = 0, brillo: Double = 0, altasLuces: Double,
                 contraste: Double, negros: Double, blancos: Double, verdesOliva: Double,
                 verdesApagados: Double, azulesApagados: Double, rojosAmarillos: Double,
-                saturacion: Double, sombrasFrias: Double, lucesAmarillas: Double, mono: Double = 0) {
+                saturacion: Double, sombrasFrias: Double, lucesAmarillas: Double, mono: Double = 0,
+                filtro: Double = 0, filtroTono: Double = 0, viradoSombras: Double = 0, viradoSombrasTono: Double = 0,
+                viradoLuces: Double = 0, viradoLucesTono: Double = 0) {
         self.calidez = calidez
         self.tinte = tinte
         self.brillo = brillo
@@ -48,10 +58,21 @@ public struct FilmRecipe: Sendable, Hashable, Codable {
         self.sombrasFrias = sombrasFrias
         self.lucesAmarillas = lucesAmarillas
         self.mono = mono
+        self.filtro = filtro
+        self.filtroTono = filtroTono
+        self.viradoSombras = viradoSombras
+        self.viradoSombrasTono = viradoSombrasTono
+        self.viradoLuces = viradoLuces
+        self.viradoLucesTono = viradoLucesTono
     }
 
     enum CodingKeys: String, CodingKey {
-        case calidez, tinte, brillo, contraste, negros, blancos, saturacion, mono
+        case calidez, tinte, brillo, contraste, negros, blancos, saturacion, mono, filtro
+        case filtroTono = "filtro_tono"
+        case viradoSombras = "virado_sombras"
+        case viradoSombrasTono = "virado_sombras_tono"
+        case viradoLuces = "virado_luces"
+        case viradoLucesTono = "virado_luces_tono"
         case altasLuces = "altas_luces"
         case verdesOliva = "verdes_oliva"
         case verdesApagados = "verdes_apagados"
@@ -78,6 +99,12 @@ public struct FilmRecipe: Sendable, Hashable, Codable {
         sombrasFrias = try c.decode(Double.self, forKey: .sombrasFrias)
         lucesAmarillas = try c.decode(Double.self, forKey: .lucesAmarillas)
         mono = try c.decodeIfPresent(Double.self, forKey: .mono) ?? 0
+        filtro = try c.decodeIfPresent(Double.self, forKey: .filtro) ?? 0
+        filtroTono = try c.decodeIfPresent(Double.self, forKey: .filtroTono) ?? 0
+        viradoSombras = try c.decodeIfPresent(Double.self, forKey: .viradoSombras) ?? 0
+        viradoSombrasTono = try c.decodeIfPresent(Double.self, forKey: .viradoSombrasTono) ?? 0
+        viradoLuces = try c.decodeIfPresent(Double.self, forKey: .viradoLuces) ?? 0
+        viradoLucesTono = try c.decodeIfPresent(Double.self, forKey: .viradoLucesTono) ?? 0
     }
 
     /// Hash estable entre ejecuciones y dispositivos (a diferencia de `hashValue`): SHA-256 del
@@ -127,7 +154,19 @@ public struct FilmRecipe: Sendable, Hashable, Codable {
         lg = lg / (1 + k * lg) * (1 + k)
         lb = lb / (1 + k * lb) * (1 + k)
         if mono != 0 {
-            let y = F.linearToSRGB(0.2126 * lr + 0.7152 * lg + 0.0722 * lb)
+            // Filtro de color delante del B/N: pasa su color y oscurece el complementario.
+            var wr = 0.2126, wg = 0.7152, wb = 0.0722
+            if filtro != 0 {
+                let (fr, fg, fb) = F.hsvToRGB(F.pyMod(filtroTono, 360) / 360, F.clamp(filtro), 1.0)
+                wr *= fr
+                wg *= fg
+                wb *= fb
+                let total = wr + wg + wb
+                wr /= total
+                wg /= total
+                wb /= total
+            }
+            let y = F.linearToSRGB(wr * lr + wg * lg + wb * lb)
             lr = F.srgbToLinear(y)
             lg = lr
             lb = lr
@@ -151,12 +190,24 @@ public struct FilmRecipe: Sendable, Hashable, Codable {
 
         let luma = 0.2126 * er + 0.7152 * eg + 0.0722 * eb
         let shadow = pow(1 - luma, 2), light = pow(luma, 2)
-        func finish(_ c: Double, _ tintShadow: Double, _ tintLight: Double) -> Double {
+        // Virado partido: un tono en las sombras y otro en las luces.
+        var tonedShadow = (0.0, 0.0, 0.0), tonedLight = (0.0, 0.0, 0.0)
+        if viradoSombras != 0 {
+            let d = F.toneOffset(viradoSombrasTono), k = 0.12 * viradoSombras
+            tonedShadow = (k * d.0 * (1 - luma), k * d.1 * (1 - luma), k * d.2 * (1 - luma))
+        }
+        if viradoLuces != 0 {
+            let d = F.toneOffset(viradoLucesTono), k = 0.12 * viradoLuces
+            tonedLight = (k * d.0 * luma, k * d.1 * luma, k * d.2 * luma)
+        }
+        func finish(_ c: Double, _ tintShadow: Double, _ tintLight: Double, _ toneS: Double, _ toneL: Double) -> Double {
             var c = F.contrast(c, contraste)
             c = negros + (blancos - negros) * c
-            return F.clamp(c + tintShadow * sombrasFrias * shadow + tintLight * lucesAmarillas * light)
+            return F.clamp(c + tintShadow * sombrasFrias * shadow + tintLight * lucesAmarillas * light + toneS + toneL)
         }
-        return (finish(er, -0.006, 0.015), finish(eg, 0.006, 0.008), finish(eb, 0.004, -0.02))
+        return (finish(er, -0.006, 0.015, tonedShadow.0, tonedLight.0),
+                finish(eg, 0.006, 0.008, tonedShadow.1, tonedLight.1),
+                finish(eb, 0.004, -0.02, tonedShadow.2, tonedLight.2))
     }
 }
 
@@ -178,6 +229,13 @@ enum FilmMath {
     static func linearToSRGB(_ c: Double) -> Double {
         let c = clamp(c)
         return c <= 0.0031308 ? c * 12.92 : 1.055 * pow(c, 1 / 2.4) - 0.055
+    }
+
+    /// `tone_offset`: desvío de color (sin cambiar la luminancia) del tono `deg` a saturación plena.
+    static func toneOffset(_ deg: Double) -> (Double, Double, Double) {
+        let (r, g, b) = hsvToRGB(pyMod(deg, 360) / 360, 1.0, 1.0)
+        let y = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        return (r - y, g - y, b - y)
     }
 
     static func smoothstep(_ x: Double) -> Double {
