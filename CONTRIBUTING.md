@@ -5,27 +5,23 @@ arquitectura en [docs/04-arquitectura-alternativa.md](docs/04-arquitectura-alter
 
 ## Ramas y PRs
 
-| Rama | Qué tiene |
-|---|---|
-| `app/esqueleto-ios` | Base de la app: captura, Looks, visor. Los PRs apuntan acá. |
-| `claude/looks-recetas-json-345575` | PR #2: los Looks de película como recetas (LUT generado en el dispositivo). Probado en el simulador. |
-| `claude/looks-recetas-json-345575-sne4w3` | PR #3, encima del #2: editor de recetas, recetas propias, efectos (nitidez, claridad, viñeteo) y el Laboratorio web. **Sin compilar todavía.** |
+Todo lo de la app está en `main`. Para un cambio nuevo: rama propia desde `main`, commits chicos y
+PR contra `main`. No reescribir historia en ramas de otros (nada de `rebase` ni `push --force`);
+para traer cambios, `git merge`.
 
-Para un cambio nuevo: rama propia desde la que corresponda, commits chicos y PR contra esa rama.
-No reescribir historia en ramas de otros (nada de `rebase` ni `push --force`); para traer cambios,
-`git merge`.
+El editor de recetas, las recetas propias y los efectos todavía no se compilaron en Xcode: la
+verificación está en el issue #4.
 
 ## Primeros pasos (Mac con Xcode)
 
 ```bash
 git clone https://github.com/marvainstein/camera.app.git
 cd camera.app
-git checkout claude/looks-recetas-json-345575-sne4w3
 scripts/test.sh
 ```
 
 `scripts/test.sh` compila la app y corre los tests de los dos paquetes en el simulador. Si falla,
-pegá la salida en el PR #3 o en el issue de verificación.
+pegá la salida en el issue #4.
 
 Para ver la app: `open CameraApp.xcworkspace`, scheme **CameraApp**, un iPhone simulado y ⌘R. El
 simulador no tiene cámara: muestra un patrón de prueba con el Look aplicado. La varita, a la
@@ -55,8 +51,8 @@ node tools/laboratorio/verificar.js             # el motor JS contra las referen
 ## Con Claude Code
 
 Cada uno puede abrir su propia sesión sobre este repo (claude.ai/code con su cuenta, conectando
-GitHub y eligiendo `marvainstein/camera.app`). Conviene decirle en qué rama trabajar y apuntarlo a
-este archivo. Las sesiones no comparten memoria: lo que importa tiene que quedar en el repo, los
+GitHub y eligiendo `marvainstein/camera.app`). Conviene apuntarlo a este archivo y pedirle que
+trabaje en una rama propia desde `main`. Las sesiones no comparten memoria: lo que importa tiene que quedar en el repo, los
 PRs o los issues.
 
 ## Reglas del repo
