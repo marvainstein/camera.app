@@ -1,4 +1,5 @@
 import CoreGraphics
+import ImageIO
 import Foundation
 import Metal
 import Testing
@@ -515,6 +516,27 @@ private let hasMetal = MTLCreateSystemDefaultDevice() != nil
         let flat = try render(renderer, lut: nil,
                               parameters: LookParameters(effects: LookEffects(halation: 1, bloom: 1)), pixels: gray)
         #expect(maxChannelDifference(gray, flat) <= 1)
+    }
+
+    @Test func previewTextureFromPhotoFollowsOrientation() throws {
+        // JPEG apaisado de 64×32 marcado con orientación 6 (rotar 90°): en el visor tiene que quedar parado.
+        let pixels = [UInt8](repeating: 200, count: 64 * 32 * 4)
+        let provider = try #require(CGDataProvider(data: Data(pixels) as CFData))
+        let image = try #require(CGImage(
+            width: 64, height: 32, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: 64 * 4,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue), provider: provider,
+            decode: nil, shouldInterpolate: false, intent: .defaultIntent))
+        let data = NSMutableData()
+        let destination = try #require(CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, [kCGImagePropertyOrientation: 6] as CFDictionary)
+        #expect(CGImageDestinationFinalize(destination))
+
+        let texture = try renderer.makePreviewTexture(photo: data as Data)
+        #expect(texture.width == 32 && texture.height == 64)
+        let bytes = try renderer.readBytes(texture)
+        #expect(abs(Int(bytes[0]) - 200) <= 3)
+        #expect(throws: LookRendererError.self) { try renderer.makePreviewTexture(photo: Data("no es una foto".utf8)) }
     }
 
     @Test func rendersFullCGImage() throws {

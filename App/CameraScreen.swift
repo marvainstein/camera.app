@@ -1,11 +1,13 @@
 import CaptureCore
 import Looks
+import PhotosUI
 import SwiftUI
 import UIKit
 
 struct CameraScreen: View {
     @State private var model = CameraModel()
     @State private var showsManual = false
+    @State private var photoItem: PhotosPickerItem?
 
     var body: some View {
         ZStack {
@@ -25,6 +27,15 @@ struct CameraScreen: View {
             .padding(.vertical, 8)
         }
         .task { await model.start() }
+        .onChange(of: photoItem) { _, item in
+            guard let item else { return }
+            Task {
+                if let data = try? await item.loadTransferable(type: Data.self) {
+                    await model.usePhoto(data)
+                }
+                photoItem = nil
+            }
+        }
         .sheet(isPresented: $showsManual) {
             ManualControls(settings: $model.settings, limits: model.limits)
                 .presentationDetents([.medium, .large])
@@ -80,6 +91,20 @@ struct CameraScreen: View {
             .frame(width: 120)
             .disabled(model.capabilities?.isProRAWSupported != true)
 
+            if model.photo != nil {
+                Button {
+                    model.closePhoto()
+                } label: {
+                    Image(systemName: "camera")
+                }
+                .accessibilityLabel("Volver a la cámara")
+            } else {
+                PhotosPicker(selection: $photoItem, matching: .images) {
+                    Image(systemName: "photo.on.rectangle")
+                }
+                .accessibilityLabel("Probar con una foto")
+            }
+
             Button {
                 showsManual = true
             } label: {
@@ -92,11 +117,15 @@ struct CameraScreen: View {
     // MARK: - Estado
 
     @ViewBuilder private var statusBanner: some View {
-        let text: String? = switch model.status {
-        case .starting, .running: model.message
-        case .noCamera: "Sin cámara (simulador): Look aplicado sobre un patrón de prueba"
-        case .denied: "Sin permiso de cámara. Activalo en Ajustes."
-        case .failed(let reason): "Error: \(reason)"
+        let text: String? = if model.photo != nil {
+            model.message ?? "Foto de la fototeca: el disparador guarda una copia con el Look"
+        } else {
+            switch model.status {
+            case .starting, .running: model.message
+            case .noCamera: "Sin cámara (simulador): Look aplicado sobre un patrón de prueba"
+            case .denied: "Sin permiso de cámara. Activalo en Ajustes."
+            case .failed(let reason): "Error: \(reason)"
+            }
         }
         if let text {
             Text(text)
@@ -186,8 +215,8 @@ struct CameraScreen: View {
                 .background(Circle().fill(model.isCapturing ? Color.gray : Color.white).padding(6))
                 .frame(width: 72, height: 72)
         }
-        .disabled(model.status != .running || model.isCapturing)
-        .accessibilityLabel("Disparar")
+        .disabled((model.status != .running && model.photo == nil) || model.isCapturing)
+        .accessibilityLabel(model.photo == nil ? "Disparar" : "Guardar copia con el Look")
     }
 }
 
