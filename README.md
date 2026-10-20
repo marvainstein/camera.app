@@ -1,6 +1,10 @@
-# laika
+# camera.app
 
-Estudio de Leica LUX (iOS) para diseñar una app de cámara alternativa propia.
+Estudio de Leica LUX (iOS) y app de cámara alternativa propia.
+
+Para sumarse al proyecto, ver [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Documentación
 
 | Doc | Contenido |
 |---|---|
@@ -12,3 +16,229 @@ Estudio de Leica LUX (iOS) para diseñar una app de cámara alternativa propia.
 Herramienta: `scripts/inspect_ipa.sh App.ipa` inventaria una IPA sin ejecutar nada de su contenido.
 
 Este repo no contiene ni debe contener material de Leica (IPAs, LUTs, modelos, assets).
+`re-out/` está en `.gitignore` y la app no usa nada de ahí.
+
+## App (esqueleto: pasos 1 y 2 de docs/04)
+
+SwiftUI, iOS 18+, sin dependencias de terceros.
+
+```
+CameraApp.xcworkspace      ← abrir esto (proyecto + paquetes, corre todos los tests)
+CameraApp.xcodeproj        app: visor, Looks, editor de recetas, controles P/A y manuales
+App/                       fuentes de la app (carpeta sincronizada con Xcode)
+Packages/CaptureCore/      AVFoundation: sesión, P/A, ISO/obturación/EV/WB manual,
+                           captura HEIC + ProRAW, guardado en Fotos (PhotoKit)
+Packages/Looks/            Metal: LUT 3D 64³ RGBA16F + intensidad + nitidez/claridad/viñeteo + grano;
+                           mismo pipeline para el preview y la foto final; recetas de
+                           película que generan su LUT en el dispositivo; recetas propias
+scripts/make_luts.py       catálogo de Looks: recetas y LUTs propios, importa .cube
+scripts/test.sh            corre todos los tests en el simulador
+tools/laboratorio/         Laboratorio de recetas: el motor de Looks en el navegador
+```
+
+### Requisitos
+
+- Xcode 16 o posterior (probado con Xcode 26.5 en un Mac Intel) y un simulador de iPhone.
+- Python 3 (solo stdlib) si querés regenerar los LUTs.
+
+### Correr en el simulador
+
+1. `open CameraApp.xcworkspace`, elegir el scheme **CameraApp** y un iPhone simulado, ⌘R.
+2. El simulador no tiene cámara: la app muestra un **patrón de prueba** con el Look aplicado, así
+   se pueden probar Looks, intensidad, grano y los controles manuales. El disparador queda
+   deshabilitado.
+
+Desde la terminal:
+
+```bash
+xcodebuild -workspace CameraApp.xcworkspace -scheme CameraApp -destination 'platform=iOS Simulator,name=iPhone 17 Pro Max' -derivedDataPath build/DerivedData build
+```
+
+### Correr en un iPhone
+
+En el target CameraApp → Signing & Capabilities, elegir tu Team (y cambiar el bundle id
+`com.marvainstein.cameraapp` si hace falta). La app pide permiso de cámara y de "agregar a Fotos".
+ProRAW solo se habilita en modelos Pro.
+
+### Tests
+
+```bash
+scripts/test.sh
+```
+
+Compila la app y corre en el simulador (el iPhone del runtime de iOS más nuevo, o el que pases como
+argumento) los tests de ambos paquetes (test plan `CameraApp.xctestplan`). Los tests de GPU se
+saltean si la máquina no tiene Metal. También se pueden correr en macOS, más rápido:
+
+```bash
+swift test --package-path Packages/Looks
+```
+
+```bash
+swift test --package-path Packages/CaptureCore
+```
+
+Qué se prueba:
+
+- **Looks**: LUT identidad ⇒ salida idéntica a la entrada (8 bits exacto y < ½ nivel en float16);
+  el LUT que genera Swift para cada receta coincide con la referencia 17³ de Python (±1/1024);
+  caché en disco de los LUTs generados;
+  intensidad 0 y "sin LUT" no tocan la imagen; el B/N es neutro; la GPU coincide con una
+  referencia trilineal en CPU (±1 nivel); el grano es determinista por semilla y no cambia el
+  brillo medio; formato `.lut` (ida y vuelta, cabecera inválida, archivo truncado); aspect fill;
+  la receta neutra es la identidad; los rangos del editor cubren todas las recetas incluidas;
+  recetas propias (guardar/leer, compartir e importar texto, valores fuera de rango acotados);
+  efectos: el viñeteo oscurece solo las esquinas, la nitidez y la claridad no tocan zonas planas
+  y suben el contraste en los bordes.
+- **CaptureCore**: resolución P/A/manual a exposición automática o custom, recorte a los límites
+  del dispositivo, paradas de ISO/obturación, ganancias de balance de blancos.
+
+### Cómo funciona
+
+- **Preview**: `AVCaptureVideoDataOutput` (BGRA, rotado a vertical) → `CVMetalTextureCache` →
+  `LookRenderer` (vertex + fragment shader, un triángulo de pantalla completa) → `MTKView`.
+  El grano usa una semilla distinta por frame.
+- **Look**: el color de entrada (valores codificados, 0…1) se usa como coordenada en una
+  textura 3D 64³ `.rgba16Float` con filtrado lineal, apuntando al centro de los texeles
+  (`c·(N−1)/N + 0.5/N`); el resultado se mezcla con la entrada según la intensidad.
+- **Grano**: ruido gaussiano (hash PCG + Box-Muller) por celda; el tamaño de celda es relativo al
+  lado corto de la imagen, así el grano se ve igual en el preview y en la foto. Más fuerte en
+  medios tonos.
+- **Foto**: el HEIC procesado se decodifica, pasa por el mismo `LookRenderer` y se vuelve a
+  codificar en HEIC conservando los metadatos. Con ProRAW, el DNG se guarda intacto como
+  recurso alternativo del mismo asset en Fotos.
+- **Modos**: P = exposición automática + EV. A = apertura **simulada** (el iPhone tiene apertura
+  fija): por ahora solo se guarda en `CaptureSettings` para LensSim (paso 4). Fijar ISO u
+  obturación pasa a exposición custom; el otro valor toma el actual de la cámara.
+- **Efectos** (en el mismo shader, solo si el Look los usa): **nitidez** compara cada píxel con sus
+  4 vecinos de la fuente; **claridad** lo compara con una versión de la fuente reducida a 48 px de
+  lado corto (un pase previo que promedia 8×8 muestras por píxel), pesando más los medios tonos;
+  ambos actúan sobre la luminancia, antes del LUT. El **viñeteo** va después del LUT, relativo al
+  cuadro de salida. Como el grano, todo es relativo al tamaño de la imagen.
+- Los shaders se compilan en runtime desde Swift (`LookShaders.swift`) para que el paquete
+  funcione igual con `swift test` en macOS que en iOS.
+
+### LUTs
+
+`Packages/Looks/Sources/Looks/Resources/LUTs/looks.json` es el catálogo (id, nombre, grano
+sugerido y de dónde sale el LUT). La app muestra los Looks en ese orden. Cada Look tiene una de dos
+cosas:
+
+- `"recipe": {…}`: **receta de película**, los parámetros de `film_look()` (calidez, tinte, brillo,
+  altas_luces, contraste, negros, blancos, verdes_oliva, verdes_apagados, azules_apagados,
+  rojos_amarillos, saturacion, sombras_frias, luces_amarillas, mono; tinte, brillo y mono son
+  opcionales). La app genera el LUT 64³ en el dispositivo (`FilmRecipe.swift`, port 1:1 del script
+  en `Double`, en paralelo por planos) la primera vez que se elige el Look, y lo cachea en memoria y
+  en `Library/Caches/Looks/` con clave id + hash de la receta + versión del generador. Unos 25 ms
+  en un Mac en release. Son: **Dorado 200**, **Retrato 400**, **Ámbar 800**, **Negativo Diario**,
+  **Diapositiva**, **Plata 400** y **Cine Verde**.
+- `"lut": "archivo.lut"`: LUT precalculado en el bundle. Los de fórmula fija de
+  `scripts/make_luts.py` (**Natural** = identidad, **B/N Neutro** = luminancia Rec.709 + curva S
+  suave, **Cálido** = balance cálido en luz lineal, sombras levantadas, +8 % saturación) y los
+  `.cube` importados.
+
+Un Look con receta puede llevar además `"effects": {"nitidez": …, "claridad": …, "vineteo": …}`
+(−1…1, los que faltan valen 0): lo de una receta Ricoh que no entra en un LUT. Ámbar 800,
+Diapositiva, Plata 400 y Cine Verde los usan (ver `EFFECTS` en `make_luts.py`).
+
+La app carga cada LUT recién cuando se elige el Look, fuera del main actor; hasta que está listo el
+preview sigue con el anterior, y la foto se hornea con el LUT si ya está cargado.
+
+`generate` reescribe las recetas y los `.lut` de fórmula fija en el catálogo (respeta los
+importados):
+
+```bash
+python3 scripts/make_luts.py generate
+```
+
+Si se cambia `film_look()`, hay que cambiar igual `FilmRecipe.apply`, subir
+`FilmRecipe.generatorVersion` (invalida los cachés) y regenerar las referencias de los tests
+(17³, en `Packages/Looks/Tests/LooksTests/Resources/`):
+
+```bash
+python3 scripts/make_luts.py export-reference
+```
+
+Para comparar a mano, `export-lut` escribe el `.lut` 64³ de cualquier Look propio (o de todos) sin
+tocar el catálogo, por defecto en `build/luts/`:
+
+```bash
+python3 scripts/make_luts.py export-lut dorado-200 plata-400
+```
+
+**Importar un LUT** (`.cube` 3D de cualquier tamaño, p. ej. 17/33/65, con o sin `DOMAIN_MIN/MAX`):
+se remuestrea a 64³, se adapta al espacio de entrada de la app y se agrega o actualiza en el
+catálogo.
+
+```bash
+python3 scripts/make_luts.py add mi-look.cube --id mi-look --name "Mi Look" --grain 0.2 --input rec709
+```
+
+- `--input srgb` (por defecto): el LUT espera valores sRGB, igual que la app.
+- `--input rec709`: el LUT se diseñó para Rec.709 gamma 2.4 (lo típico en Resolve). Se convierten
+  la entrada y la salida para que se vea como en el programa de origen.
+- Todavía no se soportan LUTs que esperan log (Apple Log, S-Log3…) ni `.cube` con shaper 1D.
+  El script los rechaza con un mensaje.
+
+```bash
+python3 scripts/make_luts.py list
+```
+
+```bash
+python3 scripts/make_luts.py remove mi-look
+```
+
+Solo usar LUTs propios o con licencia que permita distribuirlos dentro de la app.
+
+Formato `.lut`: cabecera de 16 bytes (`LAIKALUT`, versión u32 = 1, tamaño u32 = 64) + 64³ texeles
+RGBA float16 little-endian, R variando más rápido (mismo layout que la textura Metal 3D).
+
+### Recetas propias (editor)
+
+El botón de la varita, a la izquierda de los Looks, abre el menú de recetas: **Receta nueva**
+(arranca de la receta neutra), **Copiar y editar** un Look incluido o **Editar** una receta propia,
+**Compartir receta** y **Pegar receta**. Lo mismo está en el menú contextual (mantener apretado) de
+cada Look.
+
+- El editor tiene un slider por parámetro de la receta (agrupados en Tono, Color y Virado), B/N,
+  grano, nitidez, claridad y viñeteo. Tocar el valor lo vuelve a neutro. Los rangos están en
+  `FilmRecipe.parameters` (`RecipeParameters.swift`).
+- Se ve en vivo: el editor ocupa media pantalla y el visor sigue arriba. Con cada cambio se genera
+  un LUT 25³ (milisegundos) y, si los sliders quedan quietos 300 ms, el de 64³.
+- Las recetas propias se guardan en `Application Support/Looks/user-looks.json`, con el mismo
+  formato de entrada que `looks.json` (se pueden pasar al catálogo tal cual). Aparecen después de
+  los incluidos, con un iconito.
+- **Compartir** produce un JSON corto (`"formato": "camera.app/receta"`, nombre, receta, grano,
+  efectos), como se comparten las recetas Ricoh por mensaje o en un foro. **Pegar** lo busca en el
+  texto copiado (puede venir con texto alrededor; también acepta una entrada de `looks.json`) y
+  acota cada valor al rango del editor.
+
+### Laboratorio de recetas (navegador)
+
+`tools/laboratorio/index.html` es un visor para armar recetas mirando el resultado, sin Xcode:
+abrirlo en el navegador (doble clic). Tiene el mismo motor de color que la app: `motor.js` es el
+port de `film_look()` y de los Looks de fórmula fija, y el shader WebGL hace lo mismo que
+`LookShaders.swift` (nitidez, claridad, LUT, viñeteo, grano) en el mismo orden.
+
+- Imagen: escenas sintéticas (atardecer, carta de color, el patrón de prueba de la app) o una foto
+  propia (subir, arrastrar o pegar).
+- Comparar antes/después arrastrando la línea, intensidad, todos los sliders del editor de la app.
+- Guardar, copiar y pegar recetas con el mismo texto que la app (`LookShare`): una receta armada
+  acá se pega en el iPhone con «Pegar receta», y al revés.
+- `catalogo.js` lo genera `make_luts.py generate` desde `looks.json`; no editarlo a mano.
+
+`node tools/laboratorio/verificar.js` compara el motor JS con las referencias de Python (las
+mismas de los tests de Swift) y con los `.lut` de fórmula fija: la diferencia máxima es el
+redondeo de float16.
+
+### Pendiente / limitaciones conocidas
+
+- El LUT se aplica sobre valores codificados en el espacio de color de la fuente (sRGB/P3 del
+  preview o del HEIC); todavía no hay variantes por espacio de color.
+- La foto con Look se procesa en 8 bits (pierde el rango extra del HEIC de 10 bits).
+- Edición no destructiva con `PHAdjustmentData` (paso 3), LensSim/bokeh (paso 4) y el resto de
+  docs/04 todavía no están.
+- Captura en un iPhone real no verificada todavía (solo simulador).
+- Los efectos y el editor de recetas no se compilaron ni probaron todavía en Xcode (se escribieron
+  en un entorno sin Swift): correr `scripts/test.sh` antes de mergear.
+- Halation y bloom (resto de Effects en docs/04) todavía no están.

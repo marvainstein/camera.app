@@ -1,0 +1,31 @@
+{
+  "configurations" : [
+    {
+      "id" : "89F92C92-8CAE-4B95-91A4-9B91F07AC3A9",
+      "name" : "Configuración 1",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+
+  },
+  "testTargets" : [
+    {
+      "target" : {
+        "containerPath" : "container:Packages\/Looks",
+        "identifier" : "LooksTests",
+        "name" : "LooksTests"
+      }
+    },
+    {
+      "target" : {
+        "containerPath" : "container:Packages\/CaptureCore",
+        "identifier" : "CaptureCoreTests",
+        "name" : "CaptureCoreTests"
+      }
+    }
+  ],
+  "version" : 1
+}
