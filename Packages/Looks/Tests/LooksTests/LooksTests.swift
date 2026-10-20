@@ -75,7 +75,11 @@ private func pythonReference(_ id: String) throws -> LUT3D {
 }
 
 private let recipeLookIDs = ["dorado-200", "retrato-400", "ambar-800", "negativo-diario", "diapositiva",
-                             "plata-400", "cine-verde"]
+                             "plata-400", "cine-verde", "estandar", "clasico", "contemporaneo", "vivido", "puro",
+                             "laton", "azul", "verde-azulado", "cine", "cine-suave", "blanqueo", "documental",
+                             "retrato-calido", "bn-alto-contraste", "plata-suave", "selenio", "sepia", "centenario",
+                             "bn-filtro-amarillo", "bn-filtro-naranja", "bn-filtro-rojo", "bn-filtro-verde",
+                             "bn-filtro-azul"]
 
 @Suite struct FilmRecipeTests {
     @Test(arguments: recipeLookIDs)
@@ -110,6 +114,36 @@ private let recipeLookIDs = ["dorado-200", "retrato-400", "ambar-800", "negativo
         #expect(recipe.tinte == 0 && recipe.brillo == 0 && recipe.mono == 0)
         let roundTrip = try JSONDecoder().decode(FilmRecipe.self, from: JSONEncoder().encode(recipe))
         #expect(roundTrip == recipe)
+    }
+
+    @Test func colorFilterChangesOnlyBlackAndWhite() {
+        var mono = FilmRecipe.neutral
+        mono.mono = 1
+        var red = mono
+        red.filtro = 1
+        red.filtroTono = 0
+        // Cielo azul: con filtro rojo sale más oscuro que sin filtro.
+        let sky = (0.35, 0.55, 0.85)
+        #expect(red.apply(sky.0, sky.1, sky.2).0 < mono.apply(sky.0, sky.1, sky.2).0 - 0.1)
+        // Un rojo sale más claro.
+        #expect(red.apply(0.8, 0.2, 0.15).0 > mono.apply(0.8, 0.2, 0.15).0 + 0.1)
+        // Sigue siendo neutro y, en color, el filtro no hace nada.
+        let out = red.apply(0.3, 0.6, 0.2)
+        #expect(out.0 == out.1 && out.1 == out.2)
+        var color = FilmRecipe.neutral
+        color.filtro = 1
+        #expect(color.apply(0.3, 0.6, 0.2) == FilmRecipe.neutral.apply(0.3, 0.6, 0.2))
+    }
+
+    @Test func splitToningTintsWithoutChangingNeutralRecipes() {
+        var sepia = FilmRecipe.neutral
+        sepia.viradoSombras = 1.5
+        sepia.viradoSombrasTono = 30
+        let toned = sepia.apply(0.4, 0.4, 0.4)
+        #expect(toned.0 > toned.1 && toned.1 > toned.2)  // marrón: R > G > B
+        var off = sepia
+        off.viradoSombras = 0
+        #expect(off.apply(0.4, 0.4, 0.4) == FilmRecipe.neutral.apply(0.4, 0.4, 0.4))
     }
 
     @Test func pythonModuloAndColorsys() {

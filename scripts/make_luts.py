@@ -100,6 +100,13 @@ def hue_weight(deg, center, width):
     return smoothstep(clamp(1 - d / width))
 
 
+def tone_offset(deg):
+    """Desvío de color (sin cambiar la luminancia) del tono `deg` a saturación plena."""
+    tr, tg, tb = colorsys.hsv_to_rgb((deg % 360) / 360, 1.0, 1.0)
+    y = 0.2126 * tr + 0.7152 * tg + 0.0722 * tb
+    return tr - y, tg - y, tb - y
+
+
 def film_look(r, g, b, p):
     """Receta propia de emulación de negativo color. `p` son los parámetros de cada película
     (los mismos sliders de la vista previa). Portada 1:1 a Swift en
@@ -113,7 +120,15 @@ def film_look(r, g, b, p):
     k = p["altas_luces"]
     lr, lg, lb = (c / (1 + k * c) * (1 + k) for c in (lr, lg, lb))
     if p.get("mono"):
-        y = linear_to_srgb(0.2126 * lr + 0.7152 * lg + 0.0722 * lb)
+        # Filtro de color delante del B/N (como en la película): pasa su color y oscurece el
+        # complementario. filtro = fuerza 0…1, filtro_tono = tono del filtro en grados.
+        wr, wg, wb = 0.2126, 0.7152, 0.0722
+        if p.get("filtro"):
+            fr, fg, fb = colorsys.hsv_to_rgb((p.get("filtro_tono", 0) % 360) / 360, clamp(p["filtro"]), 1.0)
+            wr, wg, wb = wr * fr, wg * fg, wb * fb
+            total = wr + wg + wb
+            wr, wg, wb = wr / total, wg / total, wb / total
+        y = linear_to_srgb(wr * lr + wg * lg + wb * lb)
         lr = lg = lb = srgb_to_linear(y)
     er, eg, eb = (linear_to_srgb(c) for c in (lr, lg, lb))
     # Brillo de medios tonos (como High/Low Key): >0 más claro, <0 más oscuro.
@@ -133,11 +148,19 @@ def film_look(r, g, b, p):
     out = []
     luma = 0.2126 * er + 0.7152 * eg + 0.0722 * eb
     shadow, light = (1 - luma) ** 2, luma ** 2
-    for c, tint_shadow, tint_light in zip((er, eg, eb), (-0.006, 0.006, 0.004), (0.015, 0.008, -0.02)):
+    # Virado partido: un tono en las sombras y otro en las luces (sepia, selenio, teal & orange).
+    toned_shadow = [0.0, 0.0, 0.0]
+    toned_light = [0.0, 0.0, 0.0]
+    if p.get("virado_sombras"):
+        toned_shadow = [0.12 * p["virado_sombras"] * d * (1 - luma) for d in tone_offset(p.get("virado_sombras_tono", 0))]
+    if p.get("virado_luces"):
+        toned_light = [0.12 * p["virado_luces"] * d * luma for d in tone_offset(p.get("virado_luces_tono", 0))]
+    for i, (c, tint_shadow, tint_light) in enumerate(zip((er, eg, eb), (-0.006, 0.006, 0.004), (0.015, 0.008, -0.02))):
         c = contrast(c, p["contraste"])
         c = p["negros"] + (p["blancos"] - p["negros"]) * c
         out.append(clamp(c + tint_shadow * p["sombras_frias"] * shadow
-                         + tint_light * p["luces_amarillas"] * light))
+                         + tint_light * p["luces_amarillas"] * light
+                         + toned_shadow[i] + toned_light[i]))
     return tuple(out)
 
 
@@ -196,12 +219,98 @@ CINE_VERDE = dict(calidez=0.28, tinte=1, brillo=2, altas_luces=0.36, contraste=-
                   rojos_amarillos=-0.05, saturacion=1.0, sombras_frias=2.0, luces_amarillas=0.8)
 
 
+# --- Estilos clásicos de laboratorio y de cámara ------------------------------------------
+# Diseñados desde la referencia fotográfica (la película, el papel o el proceso), con valores
+# propios. Parten de la receta neutra y cambian solo lo que hace falta.
+
+def receta(**cambios):
+    base = dict(calidez=0, altas_luces=0, contraste=0, negros=0, blancos=1, verdes_oliva=0,
+                verdes_apagados=0, azules_apagados=0, rojos_amarillos=0, saturacion=1, sombras_frias=0,
+                luces_amarillas=0)
+    base.update(cambios)
+    return base
+
+
+# Color de cámara bien resuelto: un poco de contraste y de saturación, sin dominante.
+ESTANDAR = receta(calidez=0.1, altas_luces=0.1, contraste=0.12, negros=0.01, blancos=0.99, saturacion=1.05,
+                  sombras_frias=0.5, luces_amarillas=0.5)
+# Copia de laboratorio de los 70-80: cálida, colores contenidos, contraste suave.
+CLASICO = receta(calidez=0.45, altas_luces=0.3, contraste=0.1, negros=0.03, blancos=0.975, verdes_oliva=6,
+                 verdes_apagados=0.2, azules_apagados=0.15, rojos_amarillos=0.05, saturacion=0.85,
+                 sombras_frias=0.8, luces_amarillas=0.9)
+# Digital actual: limpio, frío, contraste firme y algo de contraste local.
+CONTEMPORANEO = receta(calidez=-0.15, altas_luces=0.12, contraste=0.3, negros=0.008, blancos=0.995,
+                       azules_apagados=-0.1, rojos_amarillos=0.05, saturacion=1.1, sombras_frias=1.2,
+                       luces_amarillas=0.3)
+# Saturado y con contraste, rojos y azules intensos.
+VIVIDO = receta(calidez=0.1, altas_luces=0.15, contraste=0.28, negros=0.01, blancos=0.995, azules_apagados=-0.15,
+                rojos_amarillos=0.15, saturacion=1.35)
+# Claro y aireado: medios tonos arriba, contraste bajo, altas luces muy suaves.
+PURO = receta(calidez=0.05, brillo=1, altas_luces=0.4, contraste=0.05, negros=0.02, blancos=1,
+              verdes_apagados=0.1, saturacion=0.95)
+# Dorado: luces amarillas, verdes hacia oliva, azules apagados (papel viejo, luz de tarde).
+LATON = receta(calidez=1.2, tinte=1.5, altas_luces=0.3, contraste=0.15, negros=0.04, blancos=0.965,
+               verdes_oliva=10, verdes_apagados=0.3, azules_apagados=0.4, rojos_amarillos=0.1, saturacion=0.9,
+               sombras_frias=0.3, luces_amarillas=2.5)
+# Frío y calmo: dominante azul, sombras frías.
+AZUL = receta(calidez=-0.9, tinte=-1, altas_luces=0.2, contraste=0.15, negros=0.03, blancos=0.98,
+              rojos_amarillos=-0.1, saturacion=0.9, sombras_frias=2)
+# Teal & orange de cine: sombras verde azuladas, pieles y luces naranjas, verdes hacia cian.
+VERDE_AZULADO = receta(calidez=0.2, altas_luces=0.25, contraste=0.22, negros=0.03, blancos=0.98, verdes_oliva=-15,
+                       verdes_apagados=0.3, azules_apagados=-0.1, rojos_amarillos=0.15, saturacion=1.05,
+                       virado_sombras_tono=190, virado_sombras=0.8, virado_luces_tono=30, virado_luces=0.6)
+# Copia de cine: negros levantados, altas luces largas, color contenido, sombras apenas frías.
+CINE = receta(calidez=0.15, altas_luces=0.45, contraste=0.12, negros=0.05, blancos=0.96, verdes_oliva=-4,
+              verdes_apagados=0.25, azules_apagados=0.1, saturacion=0.85, virado_sombras_tono=200,
+              virado_sombras=0.5, virado_luces_tono=35, virado_luces=0.3)
+# Negativo de cine de bajo contraste (tipo Eterna): muy poca saturación, sombras cian verdosas.
+CINE_SUAVE = receta(calidez=-0.1, tinte=1, altas_luces=0.4, contraste=-0.05, negros=0.06, blancos=0.96,
+                    verdes_oliva=-6, verdes_apagados=0.3, azules_apagados=0.25, rojos_amarillos=-0.1,
+                    saturacion=0.7, virado_sombras_tono=170, virado_sombras=0.4)
+# Blanqueo omitido (bleach bypass): la plata queda en la copia, poco color y mucho contraste.
+BLANQUEO = receta(calidez=-0.1, brillo=-2, altas_luces=0.05, contraste=0.6, negros=0.005, blancos=0.99,
+                  rojos_amarillos=-0.1, saturacion=0.4)
+# Diapositiva de reportaje: cálida, rojos y amarillos profundos, sombras densas.
+DOCUMENTAL = receta(calidez=0.5, brillo=-0.5, altas_luces=0.1, contraste=0.3, negros=0.02, blancos=0.98,
+                    verdes_oliva=8, verdes_apagados=0.15, azules_apagados=-0.05, rojos_amarillos=0.25,
+                    saturacion=1.2, sombras_frias=0.6, luces_amarillas=0.8)
+# Retrato cálido entonado: color bajo y un virado sepia suave encima.
+RETRATO_CALIDO = receta(calidez=0.7, altas_luces=0.35, contraste=0.18, negros=0.04, blancos=0.97,
+                        verdes_apagados=0.3, azules_apagados=0.3, rojos_amarillos=-0.05, saturacion=0.7,
+                        virado_sombras_tono=30, virado_sombras=0.5, virado_luces_tono=40, virado_luces=0.4)
+
+# B/N
+BN_ALTO_CONTRASTE = receta(mono=1, brillo=-0.5, altas_luces=0.05, contraste=0.6)
+PLATA_SUAVE = receta(mono=1, brillo=0.8, altas_luces=0.4, contraste=0.05, negros=0.05, blancos=0.97)
+# Virado al selenio: sombras frías hacia el púrpura, luces casi neutras.
+SELENIO = receta(mono=1, altas_luces=0.2, contraste=0.3, negros=0.01, blancos=0.98, virado_sombras_tono=285,
+                 virado_sombras=0.45)
+SEPIA = receta(mono=1, altas_luces=0.3, contraste=0.15, negros=0.04, blancos=0.96, virado_sombras_tono=30,
+               virado_sombras=1.4, virado_luces_tono=38, virado_luces=1.2)
+# Copia antigua: negros lavados, blancos apagados, tono cálido, filtro amarillo leve.
+CENTENARIO = receta(mono=1, filtro_tono=60, filtro=0.5, brillo=-0.3, altas_luces=0.3, contraste=0.3, negros=0.07,
+                    blancos=0.93, virado_sombras_tono=35, virado_sombras=0.4, virado_luces_tono=35,
+                    virado_luces=0.4)
+
+
+def bn_filtro(tono):
+    return receta(mono=1, filtro_tono=tono, filtro=1, altas_luces=0.15, contraste=0.25, negros=0.01, blancos=0.98)
+
+
 # Efectos de cada Look ("effects" en looks.json, LookEffects en Swift). Los que faltan valen 0.
 EFFECTS = {
     "ambar-800": dict(claridad=-0.25),                 # Bennet 800: Clarity −1
     "diapositiva": dict(claridad=0.5),                 # Kodak Chrome: Clarity +2
     "plata-400": dict(claridad=0.5, vineteo=0.25),     # Tri-X 400: Clarity +2, Shading +1
     "cine-verde": dict(nitidez=-0.5),                  # Istanbul: Sharpness −2
+    "contemporaneo": dict(claridad=0.25),
+    "vivido": dict(nitidez=0.25),
+    "cine": dict(vineteo=0.15),
+    "blanqueo": dict(claridad=0.4),
+    "documental": dict(vineteo=0.1),
+    "bn-alto-contraste": dict(claridad=0.3),
+    "sepia": dict(vineteo=0.2),
+    "centenario": dict(nitidez=-0.3, vineteo=0.45),
 }
 
 
@@ -217,6 +326,29 @@ LOOKS = [
     ("diapositiva", "Diapositiva", DIAPOSITIVA, 0.1),
     ("plata-400", "Plata 400", PLATA_400, 0.6),
     ("cine-verde", "Cine Verde", CINE_VERDE, 0.0),
+    ("estandar", "Estándar", ESTANDAR, 0.0),
+    ("clasico", "Clásico", CLASICO, 0.15),
+    ("contemporaneo", "Contemporáneo", CONTEMPORANEO, 0.0),
+    ("vivido", "Vívido", VIVIDO, 0.0),
+    ("puro", "Puro", PURO, 0.0),
+    ("laton", "Latón", LATON, 0.2),
+    ("azul", "Azul", AZUL, 0.1),
+    ("verde-azulado", "Verde Azulado", VERDE_AZULADO, 0.1),
+    ("cine", "Cine", CINE, 0.2),
+    ("cine-suave", "Cine Suave", CINE_SUAVE, 0.15),
+    ("blanqueo", "Blanqueo", BLANQUEO, 0.25),
+    ("documental", "Documental", DOCUMENTAL, 0.15),
+    ("retrato-calido", "Retrato Cálido", RETRATO_CALIDO, 0.2),
+    ("bn-alto-contraste", "B/N Alto Contraste", BN_ALTO_CONTRASTE, 0.3),
+    ("plata-suave", "Plata Suave", PLATA_SUAVE, 0.2),
+    ("selenio", "Selenio", SELENIO, 0.3),
+    ("sepia", "Sepia", SEPIA, 0.25),
+    ("centenario", "Centenario", CENTENARIO, 0.55),
+    ("bn-filtro-amarillo", "B/N Filtro Amarillo", bn_filtro(60), 0.3),
+    ("bn-filtro-naranja", "B/N Filtro Naranja", bn_filtro(30), 0.3),
+    ("bn-filtro-rojo", "B/N Filtro Rojo", bn_filtro(0), 0.3),
+    ("bn-filtro-verde", "B/N Filtro Verde", bn_filtro(120), 0.3),
+    ("bn-filtro-azul", "B/N Filtro Azul", bn_filtro(220), 0.3),
 ]
 
 

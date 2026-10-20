@@ -3,7 +3,7 @@ import Foundation
 extension FilmRecipe {
     /// Grupo de sliders del editor.
     public enum Group: String, Sendable, CaseIterable, Identifiable {
-        case tono, color, virado
+        case tono, color, virado, bn
 
         public var id: String { rawValue }
 
@@ -12,6 +12,7 @@ extension FilmRecipe {
             case .tono: "Tono"
             case .color: "Color"
             case .virado: "Virado"
+            case .bn: "B/N"
             }
         }
     }
@@ -49,6 +50,15 @@ extension FilmRecipe {
             Parameter(id: "sombras_frias", name: "Sombras frías", group: .virado, range: -2...3, keyPath: \.sombrasFrias),
             Parameter(id: "luces_amarillas", name: "Luces amarillas", group: .virado, range: -2...3,
                       keyPath: \.lucesAmarillas),
+            Parameter(id: "virado_sombras", name: "Virado de sombras", group: .virado, range: 0...2,
+                      keyPath: \.viradoSombras),
+            Parameter(id: "virado_sombras_tono", name: "Tono de sombras (°)", group: .virado, range: 0...360,
+                      keyPath: \.viradoSombrasTono),
+            Parameter(id: "virado_luces", name: "Virado de luces", group: .virado, range: 0...2, keyPath: \.viradoLuces),
+            Parameter(id: "virado_luces_tono", name: "Tono de luces (°)", group: .virado, range: 0...360,
+                      keyPath: \.viradoLucesTono),
+            Parameter(id: "filtro", name: "Filtro de color", group: .bn, range: 0...1, keyPath: \.filtro),
+            Parameter(id: "filtro_tono", name: "Tono del filtro (°)", group: .bn, range: 0...360, keyPath: \.filtroTono),
         ]
     }
 
