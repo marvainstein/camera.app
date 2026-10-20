@@ -15,10 +15,14 @@ sesiones de Claude en la nube no tienen Xcode y no pueden compilar.
 ## Primeros pasos (Mac con Xcode)
 
 ```bash
-git clone https://github.com/marvainstein/camera.app.git
-cd camera.app
+git clone https://github.com/marvainstein/camera.app.git camera-app
+cd camera-app
 scripts/test.sh
 ```
+
+Ojo con el nombre de la carpeta: si queda `camera.app`, macOS la trata como una aplicación (el
+Finder la muestra "dañada" y no la abre). Clonar en `camera-app`, o renombrarla y en GitHub Desktop
+usar **Locate…** para apuntar a la carpeta nueva.
 
 `scripts/test.sh` compila la app y corre los tests de los dos paquetes en el simulador. Si falla,
 pegá la salida en el PR o en un issue.

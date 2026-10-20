@@ -234,7 +234,8 @@ private let recipeLookIDs = ["dorado-200", "retrato-400", "ambar-800", "negativo
         #expect(cineLook.effects?.halation == 0.45 && cineLook.effects?.bloom == 0.2)
         let cine = try #require(looks.first { $0.id == "cine-verde" })
         #expect(cine.effects?.nitidez == -0.5)
-        #expect(looks.first { $0.id == "dorado-200" }?.effects == nil)
+        #expect(looks.first { $0.id == "dorado-200" }?.effects == LookEffects(halation: 0.25))
+        #expect(looks.first { $0.id == "estandar" }?.effects == nil)
     }
 
     @Test func lutKeyFollowsTheRecipe() throws {
