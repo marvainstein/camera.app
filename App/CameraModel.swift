@@ -21,14 +21,16 @@ final class CameraModel {
     private(set) var isCapturing = false
     private(set) var message: String?
 
-    var selectedLookID: String? { didSet { updatePreview() } }
+    var selectedLookID: String? { didSet { loadSelectedLUT(); updatePreview() } }
     var intensity: Float = 1 { didSet { updatePreview() } }
     var grain: Float = 0 { didSet { updatePreview() } }
     var settings = CaptureSettings() { didSet { if settings != oldValue { applySettings() } } }
 
     let preview: PreviewRenderer?
     private let camera = CameraController()
+    /// Texturas de LUT ya cargadas, por id de Look. Se cargan al elegir cada Look.
     private var lutTextures: [String: MTLTexture] = [:]
+    private var loadingLUTs: Set<String> = []
 
     /// Límites para la UI cuando todavía no hay cámara (o en el simulador).
     var limits: ExposureLimits {
@@ -46,7 +48,7 @@ final class CameraModel {
             status = .failed("Metal no disponible")
             return
         }
-        loadLooks(into: preview)
+        loadLooks()
 
         guard CameraController.isCameraAvailable else {
             preview.fallback = try? preview.looks.makeTexture(rgba8: TestPattern.rgba8(), width: 1080, height: 1920)
@@ -67,12 +69,9 @@ final class CameraModel {
         }
     }
 
-    private func loadLooks(into preview: PreviewRenderer) {
+    private func loadLooks() {
         do {
             looks = try LookCatalog.bundled()
-            for look in looks {
-                lutTextures[look.id] = try preview.looks.makeLUTTexture(LookCatalog.lut(for: look))
-            }
             if let first = looks.first(where: { $0.id != "identidad" }) ?? looks.first {
                 selectedLookID = first.id
                 grain = first.grain
@@ -87,8 +86,34 @@ final class CameraModel {
         grain = look.grain
     }
 
+    /// Genera (receta) o lee (.lut) el LUT del Look elegido fuera del main actor y cachea la
+    /// textura. Mientras tanto el preview sigue con el LUT anterior.
+    private func loadSelectedLUT() {
+        guard let look = selectedLook, let renderer = preview?.looks,
+              lutTextures[look.id] == nil, !loadingLUTs.contains(look.id)
+        else { return }
+        loadingLUTs.insert(look.id)
+        Task {
+            defer { loadingLUTs.remove(look.id) }
+            do {
+                let loaded = try await Task.detached(priority: .userInitiated) {
+                    LoadedLUT(texture: try renderer.makeLUTTexture(LookCatalog.lut(for: look)))
+                }.value
+                lutTextures[look.id] = loaded.texture
+                updatePreview()
+            } catch {
+                message = "No se pudo cargar \(look.name): \(error)"
+                if selectedLookID == look.id { preview?.lut = nil }
+            }
+        }
+    }
+
     private func updatePreview() {
-        preview?.lut = selectedLookID.flatMap { lutTextures[$0] }
+        if let texture = selectedLookID.flatMap({ lutTextures[$0] }) {
+            preview?.lut = texture
+        } else if selectedLookID == nil {
+            preview?.lut = nil
+        }
         preview?.parameters = LookParameters(intensity: intensity, grain: grain)
     }
 
@@ -123,6 +148,12 @@ final class CameraModel {
             message = "Error al capturar: \(error)"
         }
     }
+}
+
+/// Textura de LUT recién subida desde una tarea de fondo. `MTLTexture` es inmutable una vez
+/// subida y Metal es seguro entre hilos.
+private struct LoadedLUT: @unchecked Sendable {
+    let texture: MTLTexture
 }
 
 /// Lo necesario para hornear el Look fuera del main actor. `MTLTexture` es inmutable una vez

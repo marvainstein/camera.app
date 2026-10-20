@@ -27,8 +27,9 @@ App/                       fuentes de la app (carpeta sincronizada con Xcode)
 Packages/CaptureCore/      AVFoundation: sesión, P/A, ISO/obturación/EV/WB manual,
                            captura HEIC + ProRAW, guardado en Fotos (PhotoKit)
 Packages/Looks/            Metal: LUT 3D 64³ RGBA16F + intensidad + grano gaussiano;
-                           mismo pipeline para el preview y la foto final
-scripts/make_luts.py       catálogo de LUTs: genera los propios e importa .cube
+                           mismo pipeline para el preview y la foto final; recetas de
+                           película que generan su LUT en el dispositivo
+scripts/make_luts.py       catálogo de Looks: recetas y LUTs propios, importa .cube
 scripts/test.sh            corre todos los tests en el simulador
 ```
 
@@ -77,6 +78,8 @@ swift test --package-path Packages/CaptureCore
 Qué se prueba:
 
 - **Looks**: LUT identidad ⇒ salida idéntica a la entrada (8 bits exacto y < ½ nivel en float16);
+  el LUT que genera Swift para cada receta coincide con la referencia 17³ de Python (±1/1024);
+  caché en disco de los LUTs generados;
   intensidad 0 y "sin LUT" no tocan la imagen; el B/N es neutro; la GPU coincide con una
   referencia trilineal en CPU (±1 nivel); el grano es determinista por semilla y no cambia el
   brillo medio; formato `.lut` (ida y vuelta, cabecera inválida, archivo truncado); aspect fill.
@@ -105,16 +108,46 @@ Qué se prueba:
 
 ### LUTs
 
-`Packages/Looks/Sources/Looks/Resources/LUTs/looks.json` es el catálogo (id, nombre, archivo,
-grano sugerido y, para los importados, el archivo de origen y su espacio de entrada). La app
-muestra los Looks en ese orden.
+`Packages/Looks/Sources/Looks/Resources/LUTs/looks.json` es el catálogo (id, nombre, grano
+sugerido y de dónde sale el LUT). La app muestra los Looks en ese orden. Cada Look tiene una de dos
+cosas:
 
-Looks propios, generados con fórmulas de `scripts/make_luts.py`: **Natural** (identidad),
-**B/N Neutro** (luminancia Rec.709 + curva S suave) y **Cálido** (balance cálido en luz lineal,
-sombras levantadas, +8 % saturación).
+- `"recipe": {…}`: **receta de película**, los parámetros de `film_look()` (calidez, tinte, brillo,
+  altas_luces, contraste, negros, blancos, verdes_oliva, verdes_apagados, azules_apagados,
+  rojos_amarillos, saturacion, sombras_frias, luces_amarillas, mono; tinte, brillo y mono son
+  opcionales). La app genera el LUT 64³ en el dispositivo (`FilmRecipe.swift`, port 1:1 del script
+  en `Double`, en paralelo por planos) la primera vez que se elige el Look, y lo cachea en memoria y
+  en `Library/Caches/Looks/` con clave id + hash de la receta + versión del generador. Unos 25 ms
+  en un Mac en release. Son: **Dorado 200**, **Retrato 400**, **Ámbar 800**, **Negativo Diario**,
+  **Diapositiva**, **Plata 400** y **Cine Verde**.
+- `"lut": "archivo.lut"`: LUT precalculado en el bundle. Los de fórmula fija de
+  `scripts/make_luts.py` (**Natural** = identidad, **B/N Neutro** = luminancia Rec.709 + curva S
+  suave, **Cálido** = balance cálido en luz lineal, sombras levantadas, +8 % saturación) y los
+  `.cube` importados.
+
+La app carga cada LUT recién cuando se elige el Look, fuera del main actor; hasta que está listo el
+preview sigue con el anterior, y la foto se hornea con el LUT si ya está cargado.
+
+`generate` reescribe las recetas y los `.lut` de fórmula fija en el catálogo (respeta los
+importados):
 
 ```bash
 python3 scripts/make_luts.py generate
+```
+
+Si se cambia `film_look()`, hay que cambiar igual `FilmRecipe.apply`, subir
+`FilmRecipe.generatorVersion` (invalida los cachés) y regenerar las referencias de los tests
+(17³, en `Packages/Looks/Tests/LooksTests/Resources/`):
+
+```bash
+python3 scripts/make_luts.py export-reference
+```
+
+Para comparar a mano, `export-lut` escribe el `.lut` 64³ de cualquier Look propio (o de todos) sin
+tocar el catálogo, por defecto en `build/luts/`:
+
+```bash
+python3 scripts/make_luts.py export-lut dorado-200 plata-400
 ```
 
 **Importar un LUT** (`.cube` 3D de cualquier tamaño, p. ej. 17/33/65, con o sin `DOMAIN_MIN/MAX`):
