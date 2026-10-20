@@ -31,6 +31,36 @@
       "name": "Retrato 400",
       "lut": "retrato-400.lut",
       "grain": 0.2
+    },
+    {
+      "id": "ambar-800",
+      "name": "Ámbar 800",
+      "lut": "ambar-800.lut",
+      "grain": 0.3
+    },
+    {
+      "id": "negativo-diario",
+      "name": "Negativo Diario",
+      "lut": "negativo-diario.lut",
+      "grain": 0.2
+    },
+    {
+      "id": "diapositiva",
+      "name": "Diapositiva",
+      "lut": "diapositiva.lut",
+      "grain": 0.1
+    },
+    {
+      "id": "plata-400",
+      "name": "Plata 400",
+      "lut": "plata-400.lut",
+      "grain": 0.6
+    },
+    {
+      "id": "cine-verde",
+      "name": "Cine Verde",
+      "lut": "cine-verde.lut",
+      "grain": 0.0
     }
   ]
 }

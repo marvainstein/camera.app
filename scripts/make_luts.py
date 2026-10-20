@@ -94,12 +94,18 @@ def film_look(r, g, b, p):
     (los mismos sliders de la vista previa)."""
     warm = p["calidez"]
     lr = srgb_to_linear(r) * (1 + 0.05 * warm)
-    lg = srgb_to_linear(g)
+    lg = srgb_to_linear(g) * (1 + 0.012 * p.get("tinte", 0))   # + verde, − magenta
     lb = srgb_to_linear(b) * (1 - 0.16 * warm)
     # Hombro en luz lineal: las altas luces se comprimen en vez de quemarse.
     k = p["altas_luces"]
     lr, lg, lb = (c / (1 + k * c) * (1 + k) for c in (lr, lg, lb))
+    if p.get("mono"):
+        y = linear_to_srgb(0.2126 * lr + 0.7152 * lg + 0.0722 * lb)
+        lr = lg = lb = srgb_to_linear(y)
     er, eg, eb = (linear_to_srgb(c) for c in (lr, lg, lb))
+    # Brillo de medios tonos (como High/Low Key): >0 más claro, <0 más oscuro.
+    gamma = 2 ** (-0.12 * p.get("brillo", 0))
+    er, eg, eb = (clamp(c) ** gamma for c in (er, eg, eb))
 
     h, sat, val = colorsys.rgb_to_hsv(er, eg, eb)
     deg = h * 360
@@ -136,6 +142,46 @@ RETRATO_400 = dict(calidez=0.5, altas_luces=0.35, contraste=0.08, negros=0.035, 
                    saturacion=0.88, sombras_frias=0.8, luces_amarillas=0.7)
 
 
+# --- Inspiradas en recetas públicas de Ricoh GR -------------------------------------------
+# Una receta Ricoh son ajustes sobre el procesado propio de la cámara, así que no se puede
+# copiar: se usa como referencia estética. Traducción aproximada de cada ajuste (escala −4…+4):
+#   base Image Control → valores de partida (negativo, positivo, cine verde, monocromo)
+#   Saturation s → saturacion × (1 + 0.06·s)      Contrast c → contraste + 0.06·c
+#   Contrast (Highlight) h → altas_luces − 0.06·h   Contrast (Shadow) k → negros − 0.008·k
+#   High/Low Key → brillo                          WB A/G/M → calidez + 0.07·A, tinte ±G/M
+# Nitidez, claridad y viñeteo (shading) no son de LUT: quedan para el módulo Effects.
+
+# Bennet 800 (Negative Film; Sat +3, Hue −1, Contrast +2, H −2, S −4, Clarity −1, WB A14 G2):
+# negativo cálido y con cuerpo, sombras abiertas.
+AMBAR_800 = dict(calidez=1.38, tinte=2, altas_luces=0.42, contraste=0.17, negros=0.062, blancos=0.98,
+                 verdes_oliva=4, verdes_apagados=0.2, azules_apagados=0.15, rojos_amarillos=0.0,
+                 saturacion=1.0, sombras_frias=1.2, luces_amarillas=0.8)
+
+# Reggie's Color Negative (Negative Film; Sat +2, Contrast +3, H −4, S −1, WB A6): negativo de
+# todos los días, balanceado, altas luces muy suaves.
+NEGATIVO_DIARIO = dict(calidez=0.82, altas_luces=0.54, contraste=0.23, negros=0.038, blancos=0.98,
+                       verdes_oliva=4, verdes_apagados=0.2, azules_apagados=0.15, rojos_amarillos=0.0,
+                       saturacion=0.95, sombras_frias=1.2, luces_amarillas=0.8)
+
+# Kodak Chrome (Positive Film; Sat +3, Hue −1, Key −2, Contrast −2, H +2, S −4, Clarity +2,
+# WB Daylight A10 G4, exp. +1/3…+1): diapositiva vibrante, azules profundos.
+DIAPOSITIVA = dict(calidez=0.9, tinte=4, brillo=-1, altas_luces=0.0, contraste=0.23, negros=0.042,
+                   blancos=0.995, verdes_oliva=0, verdes_apagados=0.0, azules_apagados=-0.1,
+                   rojos_amarillos=0.1, saturacion=1.3, sombras_frias=0.5, luces_amarillas=0.3)
+
+# Tri-X 400 (Monochrome; Key −1, Contrast +2, H −1, S +2, Shading +1, Clarity +2, grano fuerte):
+# B/N documental, negros profundos, altas luces que ruedan suave.
+PLATA_400 = dict(mono=1, calidez=0, brillo=-1, altas_luces=0.21, contraste=0.37, negros=0.004,
+                 blancos=0.98, verdes_oliva=0, verdes_apagados=0, azules_apagados=0, rojos_amarillos=0,
+                 saturacion=1.0, sombras_frias=0, luces_amarillas=0)
+
+# Istanbul (Cinema Green; Sat +3, Key +2, Contrast −1, H −1, S −3, Sharp −2, WB A4 M3, Toning 1):
+# cine verde lavado, claro y aireado.
+CINE_VERDE = dict(calidez=0.28, tinte=1, brillo=2, altas_luces=0.36, contraste=-0.11, negros=0.074,
+                  blancos=0.97, verdes_oliva=-6, verdes_apagados=0.1, azules_apagados=0.2,
+                  rojos_amarillos=-0.05, saturacion=1.0, sombras_frias=2.0, luces_amarillas=0.8)
+
+
 def look_dorado_200(r, g, b):
     return film_look(r, g, b, DORADO_200)
 
@@ -151,6 +197,11 @@ LOOKS = [
     ("calido", "Cálido", look_calido, 0.15),
     ("dorado-200", "Dorado 200", look_dorado_200, 0.3),
     ("retrato-400", "Retrato 400", look_retrato_400, 0.2),
+    ("ambar-800", "Ámbar 800", lambda r, g, b: film_look(r, g, b, AMBAR_800), 0.3),
+    ("negativo-diario", "Negativo Diario", lambda r, g, b: film_look(r, g, b, NEGATIVO_DIARIO), 0.2),
+    ("diapositiva", "Diapositiva", lambda r, g, b: film_look(r, g, b, DIAPOSITIVA), 0.1),
+    ("plata-400", "Plata 400", lambda r, g, b: film_look(r, g, b, PLATA_400), 0.6),
+    ("cine-verde", "Cine Verde", lambda r, g, b: film_look(r, g, b, CINE_VERDE), 0.0),
 ]
 
 

@@ -135,8 +135,9 @@ private let hasMetal = MTLCreateSystemDefaultDevice() != nil
         #expect(output[0] == input[2] && output[1] == input[1] && output[2] == input[0])
     }
 
-    @Test func blackAndWhiteLookIsNeutral() throws {
-        let bw = try LookCatalog.lut(for: #require(try LookCatalog.bundled().first { $0.id == "bn-neutro" }))
+    @Test(arguments: ["bn-neutro", "plata-400"])
+    func blackAndWhiteLookIsNeutral(id: String) throws {
+        let bw = try LookCatalog.lut(for: #require(try LookCatalog.bundled().first { $0.id == id }))
         let output = try render(renderer, lut: bw, parameters: LookParameters())
         for i in stride(from: 0, to: output.count, by: 4) {
             #expect(abs(Int(output[i]) - Int(output[i + 1])) <= 1)
