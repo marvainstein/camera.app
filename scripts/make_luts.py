@@ -298,19 +298,28 @@ def bn_filtro(tono):
 
 
 # Efectos de cada Look ("effects" en looks.json, LookEffects en Swift). Los que faltan valen 0.
+# halation (halo rojo alrededor de las luces fuertes, típico de la película) y bloom (las luces se
+# derraman) van de 0 a 1.
 EFFECTS = {
-    "ambar-800": dict(claridad=-0.25),                 # Bennet 800: Clarity −1
+    "dorado-200": dict(halation=0.25),
+    "retrato-400": dict(halation=0.2, bloom=0.15),
+    "negativo-diario": dict(halation=0.2),
+    "ambar-800": dict(claridad=-0.25, halation=0.35, bloom=0.1),  # Bennet 800: Clarity −1
     "diapositiva": dict(claridad=0.5),                 # Kodak Chrome: Clarity +2
     "plata-400": dict(claridad=0.5, vineteo=0.25),     # Tri-X 400: Clarity +2, Shading +1
     "cine-verde": dict(nitidez=-0.5),                  # Istanbul: Sharpness −2
     "contemporaneo": dict(claridad=0.25),
     "vivido": dict(nitidez=0.25),
-    "cine": dict(vineteo=0.15),
+    "cine": dict(vineteo=0.15, halation=0.45, bloom=0.2),
+    "cine-suave": dict(halation=0.3, bloom=0.25),
+    "puro": dict(bloom=0.3),
+    "retrato-calido": dict(bloom=0.2, halation=0.15),
+    "clasico": dict(halation=0.2),
     "blanqueo": dict(claridad=0.4),
     "documental": dict(vineteo=0.1),
     "bn-alto-contraste": dict(claridad=0.3),
     "sepia": dict(vineteo=0.2),
-    "centenario": dict(nitidez=-0.3, vineteo=0.45),
+    "centenario": dict(nitidez=-0.3, vineteo=0.45, bloom=0.2),
 }
 
 
