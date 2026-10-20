@@ -1,11 +1,12 @@
 import Foundation
 import Synchronization
 
-/// Un Look: LUT 3D + parámetros sugeridos. Se describe en `looks.json` (versionado).
+/// Un Look: LUT 3D + parámetros sugeridos. Se describe en `looks.json` (versionado); los que crea
+/// el usuario, con el mismo formato, en `UserLookStore`.
 ///
 /// El LUT sale de una receta de película (`recipe`, se genera en el dispositivo) o de un
 /// archivo `.lut` precalculado (`lut`).
-public struct Look: Sendable, Identifiable, Hashable, Decodable {
+public struct Look: Sendable, Identifiable, Hashable, Codable {
     public let id: String
     public let name: String
     /// Nombre del archivo `.lut` dentro del bundle, para los Looks sin receta.
@@ -14,13 +15,23 @@ public struct Look: Sendable, Identifiable, Hashable, Decodable {
     public let recipe: FilmRecipe?
     /// Grano sugerido (0…1).
     public let grain: Float
+    /// Nitidez, claridad y viñeteo: lo de la receta que no entra en un LUT.
+    public let effects: LookEffects?
 
-    public init(id: String, name: String, lut: String? = nil, recipe: FilmRecipe? = nil, grain: Float = 0) {
+    public init(id: String, name: String, lut: String? = nil, recipe: FilmRecipe? = nil, grain: Float = 0,
+                effects: LookEffects? = nil) {
         self.id = id
         self.name = name
         self.lut = lut
         self.recipe = recipe
         self.grain = grain
+        self.effects = effects
+    }
+
+    /// Cambia cuando cambia el LUT del Look (por ejemplo, al editar una receta propia): sirve de
+    /// clave para cachear texturas.
+    public var lutKey: String {
+        recipe.map { "\(id)-\($0.stableHash)" } ?? id
     }
 }
 

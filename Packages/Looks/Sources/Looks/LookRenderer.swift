@@ -9,15 +9,19 @@ public struct LookParameters: Sendable, Equatable {
     public var intensity: Float
     /// Cantidad de grano, 0…1 (desvío estándar = 0.1 × grain en valores codificados).
     public var grain: Float
+    /// Nitidez, claridad y viñeteo.
+    public var effects: LookEffects
     /// Tamaño de la celda de grano en milésimas del lado corto de la salida, para que el grano
     /// se vea igual en el preview y en la foto a resolución completa.
     public var grainScale: Float
     /// Semilla del ruido; cambiarla en cada frame anima el grano.
     public var seed: UInt32
 
-    public init(intensity: Float = 1, grain: Float = 0, grainScale: Float = 1.5, seed: UInt32 = 0) {
+    public init(intensity: Float = 1, grain: Float = 0, effects: LookEffects = .neutral, grainScale: Float = 1.5,
+                seed: UInt32 = 0) {
         self.intensity = intensity
         self.grain = grain
+        self.effects = effects
         self.grainScale = grainScale
         self.seed = seed
     }
@@ -46,9 +50,13 @@ struct LookUniforms {
     var seed: UInt32
     var lutSize: Float
     var hasLUT: UInt32
+    var sharpness: Float
+    var clarity: Float
+    var vignette: Float
+    var hasBlur: UInt32
 }
 
-/// Aplica un Look (LUT 3D + intensidad + grano) con Metal. Sirve para el preview en vivo
+/// Aplica un Look (LUT 3D + intensidad + efectos + grano) con Metal. Sirve para el preview en vivo
 /// (render a un drawable) y para la foto final (render offscreen de un `CGImage`).
 public final class LookRenderer: @unchecked Sendable {
     public let device: MTLDevice
@@ -56,7 +64,16 @@ public final class LookRenderer: @unchecked Sendable {
     private let library: MTLLibrary
     private let sourceSampler: MTLSamplerState
     private let lutSampler: MTLSamplerState
-    private let pipelines = OSAllocatedUnfairLock(initialState: [MTLPixelFormat: MTLRenderPipelineState]())
+    private let pipelines = OSAllocatedUnfairLock(initialState: [PipelineKey: MTLRenderPipelineState]())
+
+    struct PipelineKey: Hashable {
+        let fragment: String
+        let pixelFormat: MTLPixelFormat
+    }
+
+    /// Lado corto de la versión reducida de la fuente contra la que se mide el contraste local
+    /// (claridad). Es relativo a la imagen, así que el efecto se ve igual en el preview y en la foto.
+    static let clarityShortSide = 48
 
     public init(device: MTLDevice? = MTLCreateSystemDefaultDevice()) throws {
         guard let device, let queue = device.makeCommandQueue() else { throw LookRendererError.metalUnavailable }
@@ -153,14 +170,15 @@ public final class LookRenderer: @unchecked Sendable {
 
     // MARK: - Render
 
-    func pipeline(for pixelFormat: MTLPixelFormat) throws -> MTLRenderPipelineState {
-        if let cached = pipelines.withLock({ $0[pixelFormat] }) { return cached }
+    func pipeline(for pixelFormat: MTLPixelFormat, fragment: String = "look_fragment") throws -> MTLRenderPipelineState {
+        let key = PipelineKey(fragment: fragment, pixelFormat: pixelFormat)
+        if let cached = pipelines.withLock({ $0[key] }) { return cached }
         let descriptor = MTLRenderPipelineDescriptor()
         descriptor.vertexFunction = library.makeFunction(name: "look_vertex")
-        descriptor.fragmentFunction = library.makeFunction(name: "look_fragment")
+        descriptor.fragmentFunction = library.makeFunction(name: fragment)
         descriptor.colorAttachments[0].pixelFormat = pixelFormat
         let state = try device.makeRenderPipelineState(descriptor: descriptor)
-        pipelines.withLock { $0[pixelFormat] = state }
+        pipelines.withLock { $0[key] = state }
         return state
     }
 
@@ -171,6 +189,8 @@ public final class LookRenderer: @unchecked Sendable {
                        destination: MTLTexture,
                        parameters: LookParameters,
                        contentMode: LookContentMode = .stretch) throws {
+        let effects = parameters.effects.clamped
+        let blurred = try effects.claridad != 0 ? encodeClarityBase(commandBuffer: commandBuffer, source: source) : nil
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = destination
         pass.colorAttachments[0].loadAction = .dontCare
@@ -188,16 +208,46 @@ public final class LookRenderer: @unchecked Sendable {
             grainCell: parameters.grainScale * shortSide / 1000,
             seed: parameters.seed,
             lutSize: Float(lut?.width ?? 1),
-            hasLUT: lut == nil ? 0 : 1)
+            hasLUT: lut == nil ? 0 : 1,
+            sharpness: effects.nitidez,
+            clarity: effects.claridad,
+            vignette: effects.vineteo,
+            hasBlur: blurred == nil ? 0 : 1)
         encoder.setRenderPipelineState(try pipeline(for: destination.pixelFormat))
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<LookUniforms>.stride, index: 0)
         encoder.setFragmentBytes(&uniforms, length: MemoryLayout<LookUniforms>.stride, index: 0)
         encoder.setFragmentTexture(source, index: 0)
         encoder.setFragmentTexture(lut, index: 1)
+        encoder.setFragmentTexture(blurred, index: 2)
         encoder.setFragmentSamplerState(sourceSampler, index: 0)
         encoder.setFragmentSamplerState(lutSampler, index: 1)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         encoder.endEncoding()
+    }
+
+    /// Reduce la fuente entera (sin recorte) a `clarityShortSide` de lado corto, promediando todo
+    /// el área de cada píxel: es el "entorno" contra el que la claridad mide el contraste local.
+    private func encodeClarityBase(commandBuffer: MTLCommandBuffer, source: MTLTexture) throws -> MTLTexture {
+        let scale = Double(Self.clarityShortSide) / Double(max(1, min(source.width, source.height)))
+        let target = try makeRenderTarget(width: max(1, Int((Double(source.width) * scale).rounded())),
+                                          height: max(1, Int((Double(source.height) * scale).rounded())),
+                                          pixelFormat: .rgba16Float)
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = target
+        pass.colorAttachments[0].loadAction = .dontCare
+        pass.colorAttachments[0].storeAction = .store
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else {
+            throw LookRendererError.resourceCreationFailed("render encoder")
+        }
+        var uniforms = LookUniforms(uvTransform: SIMD4(1, 1, 0, 0), intensity: 0, grainAmount: 0, grainCell: 1,
+                                    seed: 0, lutSize: 1, hasLUT: 0, sharpness: 0, clarity: 0, vignette: 0, hasBlur: 0)
+        encoder.setRenderPipelineState(try pipeline(for: target.pixelFormat, fragment: "look_downsample"))
+        encoder.setVertexBytes(&uniforms, length: MemoryLayout<LookUniforms>.stride, index: 0)
+        encoder.setFragmentTexture(source, index: 0)
+        encoder.setFragmentSamplerState(sourceSampler, index: 0)
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+        encoder.endEncoding()
+        return target
     }
 
     /// Escala/desplazamiento de las UV de la fuente para el modo de contenido pedido.

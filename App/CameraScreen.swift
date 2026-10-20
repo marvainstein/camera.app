@@ -1,6 +1,7 @@
 import CaptureCore
 import Looks
 import SwiftUI
+import UIKit
 
 struct CameraScreen: View {
     @State private var model = CameraModel()
@@ -28,6 +29,17 @@ struct CameraScreen: View {
             ManualControls(settings: $model.settings, limits: model.limits)
                 .presentationDetents([.medium, .large])
         }
+        .sheet(isPresented: isEditingRecipe) {
+            RecipeEditor(model: model)
+                .presentationDetents([.medium, .large])
+                // El visor queda visible arriba para ver la receta en vivo.
+                .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+                .interactiveDismissDisabled()
+        }
+    }
+
+    private var isEditingRecipe: Binding<Bool> {
+        Binding(get: { model.draft != nil }, set: { if !$0 { model.cancelEditing() } })
     }
 
     // MARK: - Barra superior: P/A, formato, manual
@@ -98,18 +110,61 @@ struct CameraScreen: View {
     // MARK: - Looks
 
     private var lookPicker: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(model.looks) { look in
-                    Button(look.name) { model.select(look) }
+        HStack(spacing: 8) {
+            recipeMenu
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(model.looks) { look in
+                        Button {
+                            model.select(look)
+                        } label: {
+                            Label(look.name, systemImage: "person.fill")
+                                .labelStyle(UserLookLabelStyle(isUserLook: model.isUserLook(look)))
+                        }
                         .font(.callout)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
                         .background(model.selectedLookID == look.id ? Color.white : Color.white.opacity(0.15),
                                     in: Capsule())
                         .foregroundStyle(model.selectedLookID == look.id ? Color.black : Color.white)
+                        .contextMenu { lookActions(look) }
+                    }
                 }
             }
+        }
+    }
+
+    /// Crear, editar o pegar recetas.
+    private var recipeMenu: some View {
+        Menu {
+            Button("Receta nueva", systemImage: "plus") { model.newRecipe() }
+            if let look = model.selectedLook {
+                lookActions(look)
+            }
+            Button("Pegar receta", systemImage: "doc.on.clipboard") {
+                model.importRecipe(from: UIPasteboard.general.string ?? "")
+            }
+        } label: {
+            Image(systemName: "wand.and.stars")
+                .padding(8)
+                .background(Color.white.opacity(0.15), in: Circle())
+        }
+        .accessibilityLabel("Recetas")
+    }
+
+    @ViewBuilder private func lookActions(_ look: Look) -> some View {
+        if look.recipe != nil {
+            Button(model.isUserLook(look) ? "Editar \(look.name)" : "Copiar y editar \(look.name)",
+                   systemImage: "slider.horizontal.3") {
+                model.select(look)
+                model.edit(look)
+            }
+            if let text = model.shareText(for: look) {
+                ShareLink("Compartir receta", item: text, preview: SharePreview(look.name))
+            }
+        }
+        if model.isUserLook(look) {
+            Button("Borrar \(look.name)", systemImage: "trash", role: .destructive) { model.delete(look) }
         }
     }
 
@@ -133,6 +188,18 @@ struct CameraScreen: View {
         }
         .disabled(model.status != .running || model.isCapturing)
         .accessibilityLabel("Disparar")
+    }
+}
+
+/// Las recetas propias llevan un iconito delante del nombre.
+private struct UserLookLabelStyle: LabelStyle {
+    let isUserLook: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 4) {
+            if isUserLook { configuration.icon.imageScale(.small) }
+            configuration.title
+        }
     }
 }
 
