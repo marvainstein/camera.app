@@ -1,45 +1,89 @@
 import CaptureCore
 import Looks
+import PhotosUI
 import SwiftUI
 import UIKit
 
 struct CameraScreen: View {
     @State private var model = CameraModel()
     @State private var showsManual = false
+    @State private var photoItem: PhotosPickerItem?
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            if let preview = model.preview {
-                MetalPreview(renderer: preview).ignoresSafeArea()
+            // Cámara en vivo: el visor ocupa toda la pantalla, debajo de los controles.
+            if !model.showsWholeFrame, let preview = model.preview {
+                comparablePreview(preview).ignoresSafeArea()
             }
             VStack(spacing: 12) {
                 topBar
-                Spacer()
-                statusBanner
-                lookPicker
-                lookSliders
-                shutterButton
+                if model.showsWholeFrame, let preview = model.preview {
+                    // Foto de la fototeca o editor abierto: la imagen entera, entre los controles.
+                    comparablePreview(preview)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                } else {
+                    Spacer()
+                }
+                if model.draft != nil {
+                    RecipeEditor(model: model)
+                        .containerRelativeFrame(.vertical) { height, _ in height * 0.45 }
+                } else {
+                    statusBanner
+                    lookPicker
+                    lookSliders
+                    shutterButton
+                }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
         }
         .task { await model.start() }
+        .onChange(of: photoItem) { _, item in
+            guard let item else { return }
+            Task {
+                if let data = try? await item.loadTransferable(type: Data.self) {
+                    await model.usePhoto(data)
+                }
+                photoItem = nil
+            }
+        }
         .sheet(isPresented: $showsManual) {
             ManualControls(settings: $model.settings, limits: model.limits)
                 .presentationDetents([.medium, .large])
         }
-        .sheet(isPresented: isEditingRecipe) {
-            RecipeEditor(model: model)
-                .presentationDetents([.medium, .large])
-                // El visor queda visible arriba para ver la receta en vivo.
-                .presentationBackgroundInteraction(.enabled(upThrough: .medium))
-                .interactiveDismissDisabled()
-        }
     }
 
-    private var isEditingRecipe: Binding<Bool> {
-        Binding(get: { model.draft != nil }, set: { if !$0 { model.cancelEditing() } })
+    /// El visor; al comparar, arrastrar mueve la línea de antes/después.
+    private func comparablePreview(_ preview: PreviewRenderer) -> some View {
+        MetalPreview(renderer: preview)
+            .overlay {
+                GeometryReader { geometry in
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+                            let x = value.location.x / max(geometry.size.width, 1)
+                            model.compareSplit = Float(min(max(x, 0.02), 0.98))
+                        })
+                }
+                .allowsHitTesting(model.compareSplit != nil)
+            }
+            .overlay(alignment: .top) {
+                if model.compareSplit != nil {
+                    HStack {
+                        Text("Antes")
+                        Spacer()
+                        Text("Después")
+                    }
+                    .font(.caption2.weight(.semibold))
+                    .textCase(.uppercase)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .foregroundStyle(.white)
+                    .shadow(radius: 2)
+                    .allowsHitTesting(false)
+                }
+            }
     }
 
     // MARK: - Barra superior: P/A, formato, manual
@@ -81,6 +125,27 @@ struct CameraScreen: View {
             .disabled(model.capabilities?.isProRAWSupported != true)
 
             Button {
+                model.compareSplit = model.compareSplit == nil ? 0.5 : nil
+            } label: {
+                Image(systemName: model.compareSplit == nil ? "square.split.2x1" : "square.split.2x1.fill")
+            }
+            .accessibilityLabel(model.compareSplit == nil ? "Comparar antes y después" : "Dejar de comparar")
+
+            if model.photo != nil {
+                Button {
+                    model.closePhoto()
+                } label: {
+                    Image(systemName: "camera")
+                }
+                .accessibilityLabel("Volver a la cámara")
+            } else {
+                PhotosPicker(selection: $photoItem, matching: .images) {
+                    Image(systemName: "photo.on.rectangle")
+                }
+                .accessibilityLabel("Probar con una foto")
+            }
+
+            Button {
                 showsManual = true
             } label: {
                 Image(systemName: "slider.horizontal.3")
@@ -92,11 +157,15 @@ struct CameraScreen: View {
     // MARK: - Estado
 
     @ViewBuilder private var statusBanner: some View {
-        let text: String? = switch model.status {
-        case .starting, .running: model.message
-        case .noCamera: "Sin cámara (simulador): Look aplicado sobre un patrón de prueba"
-        case .denied: "Sin permiso de cámara. Activalo en Ajustes."
-        case .failed(let reason): "Error: \(reason)"
+        let text: String? = if model.photo != nil {
+            model.message ?? "Foto de la fototeca: el disparador guarda una copia con el Look"
+        } else {
+            switch model.status {
+            case .starting, .running: model.message
+            case .noCamera: "Sin cámara (simulador): Look aplicado sobre un patrón de prueba"
+            case .denied: "Sin permiso de cámara. Activalo en Ajustes."
+            case .failed(let reason): "Error: \(reason)"
+            }
         }
         if let text {
             Text(text)
@@ -186,8 +255,8 @@ struct CameraScreen: View {
                 .background(Circle().fill(model.isCapturing ? Color.gray : Color.white).padding(6))
                 .frame(width: 72, height: 72)
         }
-        .disabled(model.status != .running || model.isCapturing)
-        .accessibilityLabel("Disparar")
+        .disabled((model.status != .running && model.photo == nil) || model.isCapturing)
+        .accessibilityLabel(model.photo == nil ? "Disparar" : "Guardar copia con el Look")
     }
 }
 

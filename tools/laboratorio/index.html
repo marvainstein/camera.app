@@ -151,6 +151,7 @@
     <span class="sub">El mismo motor de color que la app de cámara, para armar recetas mirando el resultado.</span>
     <div class="sources" role="group" aria-label="Imagen">
       <button class="chip" id="escena-atardecer" data-scene="atardecer" aria-pressed="true">Atardecer</button>
+      <button class="chip" id="escena-noche" data-scene="noche" aria-pressed="false">Noche</button>
       <button class="chip" id="escena-carta" data-scene="carta" aria-pressed="false">Carta de color</button>
       <button class="chip" id="escena-patron" data-scene="patron" aria-pressed="false">Patrón de la app</button>
       <label class="chip" for="foto" id="foto-label">Subir foto…</label>
@@ -254,7 +255,7 @@
       name: editingId ? look.name : look.recipe ? look.name + " (mía)" : look.name,
       recipe: look.recipe ? M.clampRecipe(look.recipe) : null,
       grain: look.grain || 0,
-      effects: { nitidez: 0, claridad: 0, vineteo: 0, ...(look.effects || {}) },
+      effects: { nitidez: 0, claridad: 0, vineteo: 0, halation: 0, bloom: 0, ...(look.effects || {}) },
       editingId,
       base: look,
     };
@@ -263,7 +264,10 @@
   function draftLook(id) {
     const e = draft.effects;
     const look = { id, name: draft.name.trim() || "Receta propia", recipe: { ...draft.recipe }, grain: round(draft.grain) };
-    if (e.nitidez || e.claridad || e.vineteo) look.effects = { nitidez: round(e.nitidez), claridad: round(e.claridad), vineteo: round(e.vineteo) };
+    if (e.nitidez || e.claridad || e.vineteo || e.halation || e.bloom) {
+      look.effects = { nitidez: round(e.nitidez), claridad: round(e.claridad), vineteo: round(e.vineteo),
+                       halation: round(e.halation), bloom: round(e.bloom) };
+    }
     for (const k in look.recipe) look.recipe[k] = round(look.recipe[k]);
     return look;
   }
@@ -273,6 +277,7 @@
   const canvas = $("lienzo");
   const gl = canvas.getContext("webgl2", { preserveDrawingBuffer: true, antialias: false, premultipliedAlpha: false });
   let programs = null, sourceTex = null, lutTex = null, blurTex = null, blurFbo = null, dummyTex = null;
+  let glowTex = null, glowFbo = null;
   let floatTargets = false, sourceSize = [1, 1], lutSize = 2;
 
   const VERTEX = `#version 300 es
@@ -298,9 +303,11 @@
     uniform sampler2D uSource;
     uniform sampler3D uLut;
     uniform sampler2D uBlur;
-    uniform float uIntensity, uGrain, uGrainCell, uLutSize, uSharp, uClarity, uVignette, uSplit, uSplitWidth;
+    uniform sampler2D uGlow;
+    uniform float uIntensity, uGrain, uGrainCell, uLutSize, uSharp, uClarity, uVignette, uHalation, uBloom, uSplit, uSplitWidth;
     uniform uint uSeed;
     uniform int uHasBlur;
+    uniform int uHasGlow;
     const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
 
     uint pcg(uint v) {
@@ -337,6 +344,13 @@
         vec3 coord = rgb * ((uLutSize - 1.0) / uLutSize) + 0.5 / uLutSize;
         rgb = mix(rgb, texture(uLut, coord).rgb, uIntensity);
       }
+      // Bloom y halation: la luz de las zonas muy claras se derrama alrededor (bloom, blanca cálida) y
+      // deja un halo rojo anaranjado (halation, como en la película). uGlow ya viene difuminado.
+      if ((uHalation > 0.0 || uBloom > 0.0) && uHasGlow != 0) {
+        float g = texture(uGlow, vUv).r;
+        vec3 light = vec3(1.0, 0.97, 0.92) * (g * 0.7 * uBloom) + vec3(1.0, 0.32, 0.08) * (g * 0.9 * uHalation);
+        rgb = 1.0 - (1.0 - rgb) * (1.0 - clamp(light, 0.0, 1.0));
+      }
       if (uVignette != 0.0) {
         float r = length(vFrame - 0.5) * 1.41421356;
         rgb = clamp(rgb * (1.0 - 0.5 * uVignette * smoothstep(0.25, 1.0, r)), 0.0, 1.0);
@@ -349,7 +363,8 @@
       outColor = vec4(clamp(rgb, 0.0, 1.0), 1.0);
     }`;
 
-  // look_downsample: promedio de 8×8 muestras en el área de cada píxel reducido (base de la claridad).
+  // look_downsample: promedio de 8×8 muestras en el área de cada píxel reducido. rgb: base de la
+  // claridad; a: cuánto de ese área es luz fuerte (base del bloom y la halation).
   const DOWNSAMPLE = `#version 300 es
     precision highp float;
     in vec2 vUv;
@@ -359,13 +374,38 @@
     void main() {
       vec2 footprint = abs(vec2(dFdx(vUv.x), dFdy(vUv.y)));
       vec3 sum = vec3(0.0);
+      float highlights = 0.0;
       for (int j = 0; j < 8; j++) {
         for (int i = 0; i < 8; i++) {
           vec2 offset = ((vec2(float(i), float(j)) + 0.5) / 8.0 - 0.5) * footprint;
-          sum += clamp(texture(uSource, vUv + offset).rgb, 0.0, 1.0);
+          vec3 c = clamp(texture(uSource, vUv + offset).rgb, 0.0, 1.0);
+          sum += c;
+          highlights += smoothstep(0.85, 1.0, dot(c, vec3(0.2126, 0.7152, 0.0722)));
         }
       }
-      outColor = vec4(sum / 64.0, 1.0);
+      outColor = vec4(sum / 64.0, highlights / 64.0);
+    }`;
+
+  // look_glow: desenfoque gaussiano (σ = 1.25 píxeles reducidos) de las luces fuertes, con una
+  // saturación suave para que una luz chica también brille y una grande no sature todo.
+  const GLOW = `#version 300 es
+    precision highp float;
+    in vec2 vUv;
+    in vec2 vFrame;
+    out vec4 outColor;
+    uniform sampler2D uSource;
+    void main() {
+      vec2 t = 1.0 / vec2(textureSize(uSource, 0));
+      float sum = 0.0, weights = 0.0;
+      for (int j = -3; j <= 3; j++) {
+        for (int i = -3; i <= 3; i++) {
+          float w = exp(-float(i * i + j * j) / 3.125);
+          sum += texture(uSource, vUv + vec2(float(i), float(j)) * t).a * w;
+          weights += w;
+        }
+      }
+      float g = 1.0 - exp(-4.0 * sum / weights);
+      outColor = vec4(g, g, g, 1.0);
     }`;
 
   function compile(vs, fs) {
@@ -401,11 +441,13 @@
   function initGL() {
     if (!gl) throw new Error("Este navegador no tiene WebGL 2.");
     floatTargets = !!gl.getExtension("EXT_color_buffer_float");
-    programs = { main: compile(VERTEX, FRAGMENT), down: compile(VERTEX, DOWNSAMPLE) };
+    programs = { main: compile(VERTEX, FRAGMENT), down: compile(VERTEX, DOWNSAMPLE), glow: compile(VERTEX, GLOW) };
     gl.bindVertexArray(gl.createVertexArray());
     sourceTex = texture2D(gl.LINEAR);
     blurTex = texture2D(gl.LINEAR);
     blurFbo = gl.createFramebuffer();
+    glowTex = texture2D(gl.LINEAR);
+    glowFbo = gl.createFramebuffer();
     dummyTex = texture2D(gl.NEAREST);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
     lutTex = gl.createTexture();
@@ -443,6 +485,17 @@
     gl.bindTexture(gl.TEXTURE_2D, sourceTex);
     gl.uniform1i(down.uniforms.uSource, 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+    // Luces fuertes difuminadas (bloom y halation), del mismo tamaño.
+    gl.bindTexture(gl.TEXTURE_2D, glowTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, bw, bh, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, glowFbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, glowTex, 0);
+    const glow = programs.glow;
+    gl.useProgram(glow.program);
+    gl.uniform1i(glow.uniforms.uFlip, 1);
+    gl.bindTexture(gl.TEXTURE_2D, blurTex);
+    gl.uniform1i(glow.uniforms.uSource, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
@@ -457,7 +510,9 @@
     gl.uniform1i(u.uFlip, 0);
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, sourceTex); gl.uniform1i(u.uSource, 0);
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_3D, lutTex); gl.uniform1i(u.uLut, 1);
+    const needsGlow = fx.halation > 0 || fx.bloom > 0;
     gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, fx.claridad ? blurTex : dummyTex); gl.uniform1i(u.uBlur, 2);
+    gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, needsGlow ? glowTex : dummyTex); gl.uniform1i(u.uGlow, 3);
     gl.uniform1f(u.uIntensity, intensity);
     gl.uniform1f(u.uGrain, fx.grain);
     gl.uniform1f(u.uGrainCell, GRAIN_SCALE * Math.min(sourceSize[0], sourceSize[1]) / 1000);
@@ -466,14 +521,17 @@
     gl.uniform1f(u.uSharp, fx.nitidez);
     gl.uniform1f(u.uClarity, fx.claridad);
     gl.uniform1f(u.uVignette, fx.vineteo);
+    gl.uniform1f(u.uHalation, Math.max(0, fx.halation || 0));
+    gl.uniform1f(u.uBloom, Math.max(0, fx.bloom || 0));
     gl.uniform1i(u.uHasBlur, fx.claridad ? 1 : 0);
+    gl.uniform1i(u.uHasGlow, needsGlow ? 1 : 0);
     gl.uniform1f(u.uSplit, compare ? split : 0);
     gl.uniform1f(u.uSplitWidth, 1.5 / sourceSize[0] * Math.max(1, sourceSize[0] / (canvas.clientWidth || sourceSize[0])));
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
   function currentEffects() {
-    if (!draft) return { grain: 0, nitidez: 0, claridad: 0, vineteo: 0 };
+    if (!draft) return { grain: 0, nitidez: 0, claridad: 0, vineteo: 0, halation: 0, bloom: 0 };
     return { grain: draft.grain, ...draft.effects };
   }
 
@@ -633,7 +691,52 @@
     return c;
   }
 
-  const SCENES = { atardecer, carta, patron };
+  // Calle de noche: faroles, ventanas encendidas y un cartel de neón sobre fondo oscuro (para ver
+  // halation y bloom, que aparecen alrededor de las luces fuertes).
+  function noche() {
+    const w = 1600, h = 1067, c = makeCanvas(w, h), ctx = c.getContext("2d");
+    let rand = 777;
+    const rnd = () => ((rand = (rand * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+    const sky = ctx.createLinearGradient(0, 0, 0, h);
+    sky.addColorStop(0, "#0b1022"); sky.addColorStop(0.6, "#1a2034"); sky.addColorStop(1, "#141414");
+    ctx.fillStyle = sky; ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = "#f4f1e6"; ctx.beginPath(); ctx.arc(1320, 150, 34, 0, Math.PI * 2); ctx.fill();
+    // Edificios con ventanas.
+    const buildings = [[60, 360, 260], [340, 300, 220], [580, 420, 300], [900, 260, 240], [1160, 380, 380]];
+    for (const [x, top, bw] of buildings) {
+      ctx.fillStyle = "#1c1d24"; ctx.fillRect(x, top, bw, 860 - top);
+      for (let wy = top + 30; wy < 820; wy += 56) {
+        for (let wx = x + 24; wx < x + bw - 40; wx += 52) {
+          if (rnd() < 0.45) { ctx.fillStyle = rnd() < 0.7 ? "#ffd27a" : "#cfe3ff"; ctx.fillRect(wx, wy, 26, 32); }
+        }
+      }
+    }
+    // Vereda y calle mojada.
+    ctx.fillStyle = "#26272b"; ctx.fillRect(0, 860, w, 40);
+    const street = ctx.createLinearGradient(0, 900, 0, h);
+    street.addColorStop(0, "#202227"); street.addColorStop(1, "#0f1013");
+    ctx.fillStyle = street; ctx.fillRect(0, 900, w, h - 900);
+    // Faroles: poste, lámpara blanca y su reflejo en la calle.
+    for (const x of [200, 560, 920, 1280]) {
+      ctx.fillStyle = "#3a3b40"; ctx.fillRect(x - 4, 560, 8, 300);
+      ctx.fillStyle = "#fff6dc"; ctx.beginPath(); ctx.arc(x, 552, 16, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "rgba(255, 230, 170, 0.35)"; ctx.fillRect(x - 6, 920, 12, 130);
+    }
+    // Cartel de neón y semáforo.
+    ctx.lineWidth = 7; ctx.lineCap = "round";
+    ctx.strokeStyle = "#ff3b4f"; ctx.beginPath(); ctx.moveTo(640, 500); ctx.lineTo(820, 500); ctx.stroke();
+    ctx.strokeStyle = "#3be3ff"; ctx.beginPath(); ctx.moveTo(640, 530); ctx.lineTo(820, 530); ctx.stroke();
+    ctx.fillStyle = "#2a2a2a"; ctx.fillRect(1460, 600, 40, 110);
+    ctx.fillStyle = "#ff5a3c"; ctx.beginPath(); ctx.arc(1480, 625, 12, 0, Math.PI * 2); ctx.fill();
+    // Faros de un auto.
+    ctx.fillStyle = "#0e0f12"; ctx.fillRect(1000, 930, 260, 70);
+    ctx.fillStyle = "#fffdf4";
+    ctx.beginPath(); ctx.ellipse(1030, 960, 18, 10, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(1230, 960, 18, 10, 0, 0, Math.PI * 2); ctx.fill();
+    return c;
+  }
+
+  const SCENES = { atardecer, noche, carta, patron };
   const sceneCache = {};
 
   function showScene(name) {
@@ -679,6 +782,8 @@
     fx.appendChild(slider("nitidez", "Nitidez", -1, 1, 0, "effects"));
     fx.appendChild(slider("claridad", "Claridad", -1, 1, 0, "effects"));
     fx.appendChild(slider("vineteo", "Viñeteo", -1, 1, 0, "effects"));
+    fx.appendChild(slider("halation", "Halation", 0, 1, 0, "effects"));
+    fx.appendChild(slider("bloom", "Bloom", 0, 1, 0, "effects"));
   }
 
   const sliders = {};

@@ -11,6 +11,10 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
     var parameters = LookParameters()
     /// Fuente cuando no hay cámara (simulador).
     var fallback: MTLTexture?
+    /// Foto elegida de la fototeca: mientras está, se muestra en vez de la cámara.
+    var still: MTLTexture?
+    /// Cámara en vivo: llenar la pantalla; foto o editor: la imagen entera.
+    var contentMode = LookContentMode.aspectFill
 
     private let textureCache: CVMetalTextureCache
     private let lock = NSLock()
@@ -39,8 +43,8 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
 
     func draw(in view: MTKView) {
         var cameraTexture: CVMetalTexture?
-        var source = fallback
-        if let frame = latestFrame() {
+        var source = still ?? fallback
+        if still == nil, let frame = latestFrame() {
             let width = CVPixelBufferGetWidth(frame), height = CVPixelBufferGetHeight(frame)
             if CVMetalTextureCacheCreateTextureFromImage(nil, textureCache, frame, nil, .bgra8Unorm,
                                                          width, height, 0, &cameraTexture) == kCVReturnSuccess,
@@ -57,7 +61,7 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
         parameters.seed = frameIndex
         do {
             try looks.encode(commandBuffer: commandBuffer, source: source, lut: lut,
-                             destination: drawable.texture, parameters: parameters, contentMode: .aspectFill)
+                             destination: drawable.texture, parameters: parameters, contentMode: contentMode)
         } catch {
             return
         }

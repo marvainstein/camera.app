@@ -60,12 +60,19 @@ final class CameraModel {
     private(set) var capabilities: CameraCapabilities?
     private(set) var isCapturing = false
     private(set) var message: String?
+    /// Foto de la fototeca para probar Looks: mientras está, el visor la muestra en vez de la cámara
+    /// y el disparador guarda una copia con el Look.
+    private(set) var photo: Data?
 
     var selectedLookID: String? { didSet { loadSelectedLUT(); updatePreview() } }
     var intensity: Float = 1 { didSet { updatePreview() } }
     var grain: Float = 0 { didSet { updatePreview() } }
     /// Efectos del Look elegido.
     private(set) var effects = LookEffects.neutral
+    /// Comparar antes/después: posición de la línea (0…1) o nil.
+    var compareSplit: Float? { didSet { updatePreview() } }
+    /// Foto de la fototeca o editor abierto: se muestra la imagen entera en vez de llenar la pantalla.
+    var showsWholeFrame: Bool { photo != nil || draft != nil }
     /// Receta abierta en el editor.
     var draft: LookDraft? {
         didSet {
@@ -163,7 +170,7 @@ final class CameraModel {
             defer { loadingLUTs.remove(key) }
             do {
                 let loaded = try await Task.detached(priority: .userInitiated) {
-                    LoadedLUT(texture: try renderer.makeLUTTexture(LookCatalog.lut(for: look)))
+                    LoadedTexture(texture: try renderer.makeLUTTexture(LookCatalog.lut(for: look)))
                 }.value
                 lutTextures[key] = loaded.texture
                 updatePreview()
@@ -180,9 +187,12 @@ final class CameraModel {
     }
 
     private func updatePreview() {
+        preview?.contentMode = showsWholeFrame ? .aspectFit : .aspectFill
+        let split = compareSplit ?? 0
         if let draft {
             if let draftTexture { preview?.lut = draftTexture }
-            preview?.parameters = LookParameters(intensity: intensity, grain: draft.grain, effects: draft.effects)
+            preview?.parameters = LookParameters(intensity: intensity, grain: draft.grain, effects: draft.effects,
+                                                 split: split)
             return
         }
         if let texture = selectedTexture {
@@ -190,7 +200,7 @@ final class CameraModel {
         } else if selectedLookID == nil {
             preview?.lut = nil
         }
-        preview?.parameters = LookParameters(intensity: intensity, grain: grain, effects: effects)
+        preview?.parameters = LookParameters(intensity: intensity, grain: grain, effects: effects, split: split)
     }
 
     // MARK: - Editor de recetas
@@ -287,7 +297,7 @@ final class CameraModel {
                 }
                 guard !Task.isCancelled else { return }
                 let loaded = try? await Task.detached(priority: .userInitiated) {
-                    LoadedLUT(texture: try renderer.makeLUTTexture(recipe.makeLUT(size: size)))
+                    LoadedTexture(texture: try renderer.makeLUTTexture(recipe.makeLUT(size: size)))
                 }.value
                 guard let loaded, !Task.isCancelled else { return }
                 draftTexture = loaded.texture
@@ -308,7 +318,59 @@ final class CameraModel {
         }
     }
 
+    // MARK: - Foto de la fototeca
+
+    /// Muestra la foto en el visor (decodificada fuera del main actor).
+    func usePhoto(_ data: Data) async {
+        guard let renderer = preview?.looks else { return }
+        do {
+            let loaded = try await Task.detached(priority: .userInitiated) {
+                LoadedTexture(texture: try renderer.makePreviewTexture(photo: data))
+            }.value
+            preview?.still = loaded.texture
+            photo = data
+            message = nil
+            updatePreview()
+        } catch {
+            message = "No se pudo abrir esa foto"
+        }
+    }
+
+    /// Vuelve a la cámara (o al patrón de prueba).
+    func closePhoto() {
+        photo = nil
+        preview?.still = nil
+        updatePreview()
+    }
+
+    /// Guarda en Fotos una copia de la foto elegida con el Look, los efectos y el grano.
+    private func savePhotoWithLook(_ data: Data) async {
+        guard !isCapturing, let preview else { return }
+        guard let lut = selectedTexture else {
+            message = "Esperá a que cargue el Look"
+            return
+        }
+        isCapturing = true
+        defer { isCapturing = false }
+        let job = BakeJob(renderer: preview.looks, lut: lut,
+                          parameters: LookParameters(intensity: intensity, grain: grain, effects: effects,
+                                                     seed: .random(in: 0...UInt32.max)))
+        do {
+            let processed = try await Task.detached(priority: .userInitiated) {
+                try job.renderer.renderPhoto(data, lut: job.lut, parameters: job.parameters)
+            }.value
+            try await PhotoLibrary.save(processed: processed, raw: nil)
+            message = "Copia guardada con \(selectedLook?.name ?? "el Look")"
+        } catch {
+            message = "No se pudo guardar: \(error)"
+        }
+    }
+
     func capture() async {
+        if let photo {
+            await savePhotoWithLook(photo)
+            return
+        }
         guard status == .running, !isCapturing, let preview else { return }
         isCapturing = true
         defer { isCapturing = false }
@@ -330,9 +392,9 @@ final class CameraModel {
     }
 }
 
-/// Textura de LUT recién subida desde una tarea de fondo. `MTLTexture` es inmutable una vez
+/// Textura recién subida desde una tarea de fondo. `MTLTexture` es inmutable una vez
 /// subida y Metal es seguro entre hilos.
-private struct LoadedLUT: @unchecked Sendable {
+private struct LoadedTexture: @unchecked Sendable {
     let texture: MTLTexture
 }
 

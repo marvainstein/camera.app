@@ -1,4 +1,5 @@
 import CoreGraphics
+import ImageIO
 import Foundation
 import Metal
 import Testing
@@ -229,9 +230,12 @@ private let recipeLookIDs = ["dorado-200", "retrato-400", "ambar-800", "negativo
         let looks = try LookCatalog.bundled()
         let plata = try #require(looks.first { $0.id == "plata-400" })
         #expect(plata.effects == LookEffects(claridad: 0.5, vineteo: 0.25))
+        let cineLook = try #require(looks.first { $0.id == "cine" })
+        #expect(cineLook.effects?.halation == 0.45 && cineLook.effects?.bloom == 0.2)
         let cine = try #require(looks.first { $0.id == "cine-verde" })
         #expect(cine.effects?.nitidez == -0.5)
-        #expect(looks.first { $0.id == "dorado-200" }?.effects == nil)
+        #expect(looks.first { $0.id == "dorado-200" }?.effects == LookEffects(halation: 0.25))
+        #expect(looks.first { $0.id == "estandar" }?.effects == nil)
     }
 
     @Test func lutKeyFollowsTheRecipe() throws {
@@ -423,6 +427,31 @@ private let hasMetal = MTLCreateSystemDefaultDevice() != nil
         #expect(tall.x == 1 && abs(tall.y - 0.5625) < 1e-6)
     }
 
+    @Test func aspectFitShowsTheWholeSourceWithBars() throws {
+        let uv = LookRenderer.uvTransform(source: (200, 100), destination: (100, 100), contentMode: .aspectFit)
+        #expect(uv.x == 1 && uv.y == 2 && uv.z == 0 && uv.w == -0.5)
+        // Fuente apaisada en un destino cuadrado: arriba y abajo quedan bandas negras.
+        let source = try renderer.makeTexture(rgba8: [UInt8](repeating: 200, count: 64 * 32 * 4), width: 64, height: 32)
+        let target = try renderer.makeRenderTarget(width: 64, height: 64)
+        let commandBuffer = try #require(renderer.commandQueue.makeCommandBuffer())
+        try renderer.encode(commandBuffer: commandBuffer, source: source, lut: nil, destination: target,
+                            parameters: LookParameters(), contentMode: .aspectFit)
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        let output = try renderer.readBytes(target)
+        #expect(output[(2 * 64 + 32) * 4] == 0)        // banda de arriba
+        #expect(output[(32 * 64 + 32) * 4] == 200)     // centro: la foto
+        #expect(output[(61 * 64 + 32) * 4] == 0)       // banda de abajo
+    }
+
+    @Test func splitShowsTheOriginalOnTheLeft() throws {
+        let gray = [UInt8](repeating: 100, count: 256 * 64 * 4)
+        let lut = LUT3D(size: 8) { _ in SIMD3(1, 1, 1) }  // todo blanco
+        let output = try render(renderer, lut: lut, parameters: LookParameters(split: 0.5), pixels: gray)
+        #expect(output[(32 * 256 + 40) * 4] == 100)    // izquierda: sin Look
+        #expect(output[(32 * 256 + 220) * 4] == 255)   // derecha: con Look
+    }
+
     @Test func vignetteDarkensCornersOnly() throws {
         let gray = [UInt8](repeating: 160, count: 256 * 64 * 4)
         let output = try render(renderer, lut: nil, parameters: LookParameters(effects: LookEffects(vineteo: 1)),
@@ -488,6 +517,52 @@ private let hasMetal = MTLCreateSystemDefaultDevice() != nil
         #expect(Int(softer[inside]) - Int(softer[outside]) < 40 - 10)
         // Lejos del borde, nada.
         #expect(abs(Int(output[(32 * 256 + 20) * 4]) - 110) <= 1)
+    }
+
+    @Test func halationTintsAroundHighlightsOnly() throws {
+        // Fondo oscuro con un cuadrado blanco: la halation enrojece alrededor del cuadrado y no lejos.
+        var pixels = [UInt8](repeating: 255, count: 256 * 64 * 4)
+        for y in 0..<64 {
+            for x in 0..<256 {
+                let i = (y * 256 + x) * 4
+                let inside = (120..<136).contains(x) && (24..<40).contains(y)
+                pixels[i] = inside ? 255 : 30
+                pixels[i + 1] = pixels[i]
+                pixels[i + 2] = pixels[i]
+            }
+        }
+        let output = try render(renderer, lut: nil, parameters: LookParameters(effects: LookEffects(halation: 1)),
+                                pixels: pixels)
+        let near = (32 * 256 + 137) * 4, far = (32 * 256 + 10) * 4
+        #expect(Int(output[near]) > Int(output[near + 2]) + 8)  // más rojo que azul
+        #expect(Int(output[near]) > 30 + 8)
+        #expect(abs(Int(output[far]) - 30) <= 1 && abs(Int(output[far + 2]) - 30) <= 1)
+        // Sin luces fuertes, ni halation ni bloom cambian nada.
+        let gray = [UInt8](repeating: 128, count: 256 * 64 * 4)
+        let flat = try render(renderer, lut: nil,
+                              parameters: LookParameters(effects: LookEffects(halation: 1, bloom: 1)), pixels: gray)
+        #expect(maxChannelDifference(gray, flat) <= 1)
+    }
+
+    @Test func previewTextureFromPhotoFollowsOrientation() throws {
+        // JPEG apaisado de 64×32 marcado con orientación 6 (rotar 90°): en el visor tiene que quedar parado.
+        let pixels = [UInt8](repeating: 200, count: 64 * 32 * 4)
+        let provider = try #require(CGDataProvider(data: Data(pixels) as CFData))
+        let image = try #require(CGImage(
+            width: 64, height: 32, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: 64 * 4,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue), provider: provider,
+            decode: nil, shouldInterpolate: false, intent: .defaultIntent))
+        let data = NSMutableData()
+        let destination = try #require(CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, [kCGImagePropertyOrientation: 6] as CFDictionary)
+        #expect(CGImageDestinationFinalize(destination))
+
+        let texture = try renderer.makePreviewTexture(photo: data as Data)
+        #expect(texture.width == 32 && texture.height == 64)
+        let bytes = try renderer.readBytes(texture)
+        #expect(abs(Int(bytes[0]) - 200) <= 3)
+        #expect(throws: LookRendererError.self) { try renderer.makePreviewTexture(photo: Data("no es una foto".utf8)) }
     }
 
     @Test func rendersFullCGImage() throws {

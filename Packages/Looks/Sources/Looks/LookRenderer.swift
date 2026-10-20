@@ -16,14 +16,18 @@ public struct LookParameters: Sendable, Equatable {
     public var grainScale: Float
     /// Semilla del ruido; cambiarla en cada frame anima el grano.
     public var seed: UInt32
+    /// Comparar antes/después (solo preview): posición 0…1 de la línea en el cuadro de salida; a la
+    /// izquierda se ve la fuente sin tocar. 0 = sin comparar.
+    public var split: Float
 
     public init(intensity: Float = 1, grain: Float = 0, effects: LookEffects = .neutral, grainScale: Float = 1.5,
-                seed: UInt32 = 0) {
+                seed: UInt32 = 0, split: Float = 0) {
         self.intensity = intensity
         self.grain = grain
         self.effects = effects
         self.grainScale = grainScale
         self.seed = seed
+        self.split = split
     }
 }
 
@@ -39,6 +43,8 @@ public enum LookContentMode: Sendable {
     case stretch
     /// Llena el destino recortando lo que sobre, como `resizeAspectFill`.
     case aspectFill
+    /// Muestra la fuente entera dentro del destino, con bandas negras, como `resizeAspect`.
+    case aspectFit
 }
 
 /// Debe coincidir con `LookUniforms` en LookShaders.swift.
@@ -54,6 +60,11 @@ struct LookUniforms {
     var clarity: Float
     var vignette: Float
     var hasBlur: UInt32
+    var halation: Float
+    var bloom: Float
+    var hasGlow: UInt32
+    var split: Float
+    var splitWidth: Float
 }
 
 /// Aplica un Look (LUT 3D + intensidad + efectos + grano) con Metal. Sirve para el preview en vivo
@@ -72,7 +83,8 @@ public final class LookRenderer: @unchecked Sendable {
     }
 
     /// Lado corto de la versión reducida de la fuente contra la que se mide el contraste local
-    /// (claridad). Es relativo a la imagen, así que el efecto se ve igual en el preview y en la foto.
+    /// (claridad) y de la que salen bloom y halation. Es relativo a la imagen, así que los efectos se
+    /// ven igual en el preview y en la foto.
     static let clarityShortSide = 48
 
     public init(device: MTLDevice? = MTLCreateSystemDefaultDevice()) throws {
@@ -190,7 +202,10 @@ public final class LookRenderer: @unchecked Sendable {
                        parameters: LookParameters,
                        contentMode: LookContentMode = .stretch) throws {
         let effects = parameters.effects.clamped
-        let blurred = try effects.claridad != 0 ? encodeClarityBase(commandBuffer: commandBuffer, source: source) : nil
+        let needsGlow = effects.halation > 0 || effects.bloom > 0
+        let base = try effects.claridad != 0 || needsGlow ? encodeClarityBase(commandBuffer: commandBuffer, source: source) : nil
+        let blurred = effects.claridad != 0 ? base : nil
+        let glow = try needsGlow ? base.map { try encodeGlow(commandBuffer: commandBuffer, base: $0) } : nil
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = destination
         pass.colorAttachments[0].loadAction = .dontCare
@@ -212,13 +227,19 @@ public final class LookRenderer: @unchecked Sendable {
             sharpness: effects.nitidez,
             clarity: effects.claridad,
             vignette: effects.vineteo,
-            hasBlur: blurred == nil ? 0 : 1)
+            hasBlur: blurred == nil ? 0 : 1,
+            halation: effects.halation,
+            bloom: effects.bloom,
+            hasGlow: glow == nil ? 0 : 1,
+            split: simd_clamp(parameters.split, 0, 1),
+            splitWidth: 3 / Float(max(destination.width, 1)))
         encoder.setRenderPipelineState(try pipeline(for: destination.pixelFormat))
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<LookUniforms>.stride, index: 0)
         encoder.setFragmentBytes(&uniforms, length: MemoryLayout<LookUniforms>.stride, index: 0)
         encoder.setFragmentTexture(source, index: 0)
         encoder.setFragmentTexture(lut, index: 1)
         encoder.setFragmentTexture(blurred, index: 2)
+        encoder.setFragmentTexture(glow, index: 3)
         encoder.setFragmentSamplerState(sourceSampler, index: 0)
         encoder.setFragmentSamplerState(lutSampler, index: 1)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
@@ -226,12 +247,27 @@ public final class LookRenderer: @unchecked Sendable {
     }
 
     /// Reduce la fuente entera (sin recorte) a `clarityShortSide` de lado corto, promediando todo
-    /// el área de cada píxel: es el "entorno" contra el que la claridad mide el contraste local.
+    /// el área de cada píxel: en rgb, el "entorno" contra el que la claridad mide el contraste local;
+    /// en alfa, cuánto de ese área es luz fuerte (base del bloom y la halation).
     private func encodeClarityBase(commandBuffer: MTLCommandBuffer, source: MTLTexture) throws -> MTLTexture {
         let scale = Double(Self.clarityShortSide) / Double(max(1, min(source.width, source.height)))
         let target = try makeRenderTarget(width: max(1, Int((Double(source.width) * scale).rounded())),
                                           height: max(1, Int((Double(source.height) * scale).rounded())),
                                           pixelFormat: .rgba16Float)
+        try encodePass(commandBuffer: commandBuffer, fragment: "look_downsample", source: source, target: target)
+        return target
+    }
+
+    /// Las luces fuertes de la base difuminadas (gaussiano σ = 1.25 píxeles reducidos), del mismo tamaño.
+    private func encodeGlow(commandBuffer: MTLCommandBuffer, base: MTLTexture) throws -> MTLTexture {
+        let target = try makeRenderTarget(width: base.width, height: base.height, pixelFormat: .rgba8Unorm)
+        try encodePass(commandBuffer: commandBuffer, fragment: "look_glow", source: base, target: target)
+        return target
+    }
+
+    /// Un pase de pantalla completa de `source` a `target` con el fragment shader `fragment`.
+    private func encodePass(commandBuffer: MTLCommandBuffer, fragment: String, source: MTLTexture,
+                            target: MTLTexture) throws {
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = target
         pass.colorAttachments[0].loadAction = .dontCare
@@ -240,23 +276,33 @@ public final class LookRenderer: @unchecked Sendable {
             throw LookRendererError.resourceCreationFailed("render encoder")
         }
         var uniforms = LookUniforms(uvTransform: SIMD4(1, 1, 0, 0), intensity: 0, grainAmount: 0, grainCell: 1,
-                                    seed: 0, lutSize: 1, hasLUT: 0, sharpness: 0, clarity: 0, vignette: 0, hasBlur: 0)
-        encoder.setRenderPipelineState(try pipeline(for: target.pixelFormat, fragment: "look_downsample"))
+                                    seed: 0, lutSize: 1, hasLUT: 0, sharpness: 0, clarity: 0, vignette: 0, hasBlur: 0,
+                                    halation: 0, bloom: 0, hasGlow: 0, split: 0, splitWidth: 0)
+        encoder.setRenderPipelineState(try pipeline(for: target.pixelFormat, fragment: fragment))
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<LookUniforms>.stride, index: 0)
         encoder.setFragmentTexture(source, index: 0)
         encoder.setFragmentSamplerState(sourceSampler, index: 0)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         encoder.endEncoding()
-        return target
     }
 
     /// Escala/desplazamiento de las UV de la fuente para el modo de contenido pedido.
     static func uvTransform(source: (Int, Int), destination: (Int, Int), contentMode: LookContentMode) -> SIMD4<Float> {
-        guard case .aspectFill = contentMode, source.0 > 0, source.1 > 0, destination.0 > 0, destination.1 > 0 else {
+        guard contentMode != .stretch, source.0 > 0, source.1 > 0, destination.0 > 0, destination.1 > 0 else {
             return SIMD4(1, 1, 0, 0)
         }
         let sourceAspect = Float(source.0) / Float(source.1)
         let destinationAspect = Float(destination.0) / Float(destination.1)
+        if contentMode == .aspectFit {
+            // Coordenadas fuera de 0…1 = bandas negras (el shader las pinta).
+            if sourceAspect > destinationAspect {
+                let scale = sourceAspect / destinationAspect
+                return SIMD4(1, scale, 0, (1 - scale) / 2)
+            } else {
+                let scale = destinationAspect / sourceAspect
+                return SIMD4(scale, 1, (1 - scale) / 2, 0)
+            }
+        }
         if sourceAspect > destinationAspect {
             let scale = destinationAspect / sourceAspect
             return SIMD4(scale, 1, (1 - scale) / 2, 0)

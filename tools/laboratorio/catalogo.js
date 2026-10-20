@@ -38,7 +38,10 @@ window.CATALOGO = {
         "sombras_frias": 1.0,
         "luces_amarillas": 1.0
       },
-      "grain": 0.3
+      "grain": 0.3,
+      "effects": {
+        "halation": 0.25
+      }
     },
     {
       "id": "retrato-400",
@@ -57,7 +60,11 @@ window.CATALOGO = {
         "sombras_frias": 0.8,
         "luces_amarillas": 0.7
       },
-      "grain": 0.2
+      "grain": 0.2,
+      "effects": {
+        "halation": 0.2,
+        "bloom": 0.15
+      }
     },
     {
       "id": "ambar-800",
@@ -79,7 +86,9 @@ window.CATALOGO = {
       },
       "grain": 0.3,
       "effects": {
-        "claridad": -0.25
+        "claridad": -0.25,
+        "halation": 0.35,
+        "bloom": 0.1
       }
     },
     {
@@ -99,7 +108,10 @@ window.CATALOGO = {
         "sombras_frias": 1.2,
         "luces_amarillas": 0.8
       },
-      "grain": 0.2
+      "grain": 0.2,
+      "effects": {
+        "halation": 0.2
+      }
     },
     {
       "id": "diapositiva",
@@ -210,7 +222,10 @@ window.CATALOGO = {
         "sombras_frias": 0.8,
         "luces_amarillas": 0.9
       },
-      "grain": 0.15
+      "grain": 0.15,
+      "effects": {
+        "halation": 0.2
+      }
     },
     {
       "id": "contemporaneo",
@@ -274,7 +289,10 @@ window.CATALOGO = {
         "luces_amarillas": 0,
         "brillo": 1
       },
-      "grain": 0.0
+      "grain": 0.0,
+      "effects": {
+        "bloom": 0.3
+      }
     },
     {
       "id": "laton",
@@ -362,7 +380,9 @@ window.CATALOGO = {
       },
       "grain": 0.2,
       "effects": {
-        "vineteo": 0.15
+        "vineteo": 0.15,
+        "halation": 0.45,
+        "bloom": 0.2
       }
     },
     {
@@ -385,7 +405,11 @@ window.CATALOGO = {
         "virado_sombras_tono": 170,
         "virado_sombras": 0.4
       },
-      "grain": 0.15
+      "grain": 0.15,
+      "effects": {
+        "halation": 0.3,
+        "bloom": 0.25
+      }
     },
     {
       "id": "blanqueo",
@@ -454,7 +478,11 @@ window.CATALOGO = {
         "virado_luces_tono": 40,
         "virado_luces": 0.4
       },
-      "grain": 0.2
+      "grain": 0.2,
+      "effects": {
+        "bloom": 0.2,
+        "halation": 0.15
+      }
     },
     {
       "id": "bn-alto-contraste",
@@ -578,7 +606,8 @@ window.CATALOGO = {
       "grain": 0.55,
       "effects": {
         "nitidez": -0.3,
-        "vineteo": 0.45
+        "vineteo": 0.45,
+        "bloom": 0.2
       }
     },
     {

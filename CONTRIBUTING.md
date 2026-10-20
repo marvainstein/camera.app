@@ -9,19 +9,23 @@ Todo lo de la app está en `main`. Para un cambio nuevo: rama propia desde `main
 PR contra `main`. No reescribir historia en ramas de otros (nada de `rebase` ni `push --force`);
 para traer cambios, `git merge`.
 
-El editor de recetas, las recetas propias y los efectos todavía no se compilaron en Xcode: la
-verificación está en el issue #4.
+Antes de mergear un cambio en Swift, correr `scripts/test.sh` en un Mac (o ⌘U en Xcode): las
+sesiones de Claude en la nube no tienen Xcode y no pueden compilar.
 
 ## Primeros pasos (Mac con Xcode)
 
 ```bash
-git clone https://github.com/marvainstein/camera.app.git
-cd camera.app
+git clone https://github.com/marvainstein/camera.app.git camera-app
+cd camera-app
 scripts/test.sh
 ```
 
+Ojo con el nombre de la carpeta: si queda `camera.app`, macOS la trata como una aplicación (el
+Finder la muestra "dañada" y no la abre). Clonar en `camera-app`, o renombrarla y en GitHub Desktop
+usar **Locate…** para apuntar a la carpeta nueva.
+
 `scripts/test.sh` compila la app y corre los tests de los dos paquetes en el simulador. Si falla,
-pegá la salida en el issue #4.
+pegá la salida en el PR o en un issue.
 
 Para ver la app: `open CameraApp.xcworkspace`, scheme **CameraApp**, un iPhone simulado y ⌘R. El
 simulador no tiene cámara: muestra un patrón de prueba con el Look aplicado. La varita, a la
@@ -52,8 +56,8 @@ node tools/laboratorio/verificar.js             # el motor JS contra las referen
 
 Cada uno puede abrir su propia sesión sobre este repo (claude.ai/code con su cuenta, conectando
 GitHub y eligiendo `marvainstein/camera.app`). Conviene apuntarlo a este archivo y pedirle que
-trabaje en una rama propia desde `main`. Las sesiones no comparten memoria: lo que importa tiene que quedar en el repo, los
-PRs o los issues.
+trabaje en una rama propia desde `main`. Las sesiones no comparten memoria: lo que importa tiene
+que quedar en el repo, los PRs o los issues.
 
 ## Reglas del repo
 

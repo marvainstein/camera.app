@@ -45,8 +45,11 @@ tools/laboratorio/         Laboratorio de recetas: el motor de Looks en el naveg
 
 1. `open CameraApp.xcworkspace`, elegir el scheme **CameraApp** y un iPhone simulado, ⌘R.
 2. El simulador no tiene cámara: la app muestra un **patrón de prueba** con el Look aplicado, así
-   se pueden probar Looks, intensidad, grano y los controles manuales. El disparador queda
-   deshabilitado.
+   se pueden probar Looks, intensidad, grano y los controles manuales.
+3. Para probar con una **foto propia** (en el simulador o en el iPhone): el botón de foto de la
+   barra superior abre la fototeca y la foto pasa a ocupar el visor, con el Look, el editor y los
+   efectos en vivo. El disparador guarda una copia con el Look en Fotos (la original no se toca);
+   el botón de cámara vuelve al visor. Al simulador se le agregan fotos arrastrándolas a su ventana.
 
 Desde la terminal:
 
@@ -110,6 +113,9 @@ Qué se prueba:
 - **Modos**: P = exposición automática + EV. A = apertura **simulada** (el iPhone tiene apertura
   fija): por ahora solo se guarda en `CaptureSettings` para LensSim (paso 4). Fijar ISO u
   obturación pasa a exposición custom; el otro valor toma el actual de la cámara.
+- **Halation y bloom**: al reducir la fuente se mide cuánto de cada zona es luz casi quemada; un pase
+  aparte lo difumina (gaussiano) y el shader lo suma en modo trama, blanco cálido (bloom) o rojo
+  anaranjado (halation, el halo de la película alrededor de las luces fuertes).
 - **Efectos** (en el mismo shader, solo si el Look los usa): **nitidez** compara cada píxel con sus
   4 vecinos de la fuente; **claridad** lo compara con una versión de la fuente reducida a 48 px de
   lado corto (un pase previo que promedia 8×8 muestras por píxel), pesando más los medios tonos;
@@ -208,8 +214,10 @@ cada Look.
 - El editor tiene un slider por parámetro de la receta (agrupados en Tono, Color y Virado), B/N,
   grano, nitidez, claridad y viñeteo. Tocar el valor lo vuelve a neutro. Los rangos están en
   `FilmRecipe.parameters` (`RecipeParameters.swift`).
-- Se ve en vivo: el editor ocupa media pantalla y el visor sigue arriba. Con cada cambio se genera
-  un LUT 25³ (milisegundos) y, si los sliders quedan quietos 300 ms, el de 64³.
+- Se ve en vivo: el editor es un panel abajo y la imagen entera queda arriba (sin recortar). Con
+  cada cambio se genera un LUT 25³ (milisegundos) y, si los sliders quedan quietos 300 ms, el de 64³.
+- **Comparar** (botón de la barra superior): una línea divide la imagen en antes (izquierda, sin
+  Look ni efectos) y después; se mueve arrastrando.
 - Las recetas propias se guardan en `Application Support/Looks/user-looks.json`, con el mismo
   formato de entrada que `looks.json` (se pueden pasar al catálogo tal cual). Aparecen después de
   los incluidos, con un iconito.
@@ -244,6 +252,4 @@ redondeo de float16.
 - Edición no destructiva con `PHAdjustmentData` (paso 3), LensSim/bokeh (paso 4) y el resto de
   docs/04 todavía no están.
 - Captura en un iPhone real no verificada todavía (solo simulador).
-- Los efectos y el editor de recetas no se compilaron ni probaron todavía en Xcode (se escribieron
-  en un entorno sin Swift): correr `scripts/test.sh` antes de mergear.
 - Halation y bloom (resto de Effects en docs/04) todavía no están.

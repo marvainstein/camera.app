@@ -218,8 +218,9 @@
     const payload = { effects: undefined, formato: "camera.app/receta", grain: look.grain, name: look.name,
                       recipe: look.recipe, version: 1 };
     const e = look.effects;
-    if (e && (e.nitidez || e.claridad || e.vineteo)) {
-      payload.effects = { claridad: e.claridad || 0, nitidez: e.nitidez || 0, vineteo: e.vineteo || 0 };
+    if (e && (e.nitidez || e.claridad || e.vineteo || e.halation || e.bloom)) {
+      payload.effects = { bloom: e.bloom || 0, claridad: e.claridad || 0, halation: e.halation || 0,
+                          nitidez: e.nitidez || 0, vineteo: e.vineteo || 0 };
     }
     return JSON.stringify(payload, null, 2);
   }
@@ -245,7 +246,8 @@
       name: name || "Receta importada",
       recipe: clampRecipe(payload.recipe),
       grain: Number.isFinite(grain) ? Math.min(Math.max(grain, 0), 1) : 0,
-      effects: { nitidez: clampEffect(fx.nitidez), claridad: clampEffect(fx.claridad), vineteo: clampEffect(fx.vineteo) },
+      effects: { nitidez: clampEffect(fx.nitidez), claridad: clampEffect(fx.claridad), vineteo: clampEffect(fx.vineteo),
+                 halation: Math.max(0, clampEffect(fx.halation)), bloom: Math.max(0, clampEffect(fx.bloom)) },
     };
   }
 
