@@ -1,39 +1,57 @@
 import Looks
 import SwiftUI
 
-/// Editor de recetas: un slider por parámetro, con el visor detrás mostrando el resultado en vivo.
+/// Editor de recetas: panel en la parte de abajo de la pantalla, con la foto entera arriba para ver
+/// cada cambio en vivo.
 struct RecipeEditor: View {
     @Bindable var model: CameraModel
     @State private var confirmsDelete = false
 
-    var body: some View {
-        NavigationStack {
-            if let draft = Binding($model.draft) {
-                form(draft)
-                    .navigationTitle(draft.wrappedValue.editingID == nil ? "Nueva receta" : "Editar receta")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar { toolbar(draft.wrappedValue) }
-            }
-        }
+    /// El borrador, sin desenvolver a la fuerza: mientras el panel se va (después de guardar o
+    /// cancelar) los sliders todavía lo leen y `model.draft` ya es nil.
+    private var draft: Binding<LookDraft> {
+        Binding(get: { model.draft ?? LookDraft() },
+                set: { if model.draft != nil { model.draft = $0 } })
     }
 
-    private func form(_ draft: Binding<LookDraft>) -> some View {
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            form
+        }
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private var header: some View {
+        HStack {
+            Button("Cancelar") { model.cancelEditing() }
+            Spacer()
+            Text(draft.wrappedValue.editingID == nil ? "Nueva receta" : "Editar receta")
+                .font(.headline)
+            Spacer()
+            if draft.wrappedValue.editingID == nil {
+                Button("Guardar") { model.saveDraft() }
+                    .fontWeight(.semibold)
+            } else {
+                Menu("Guardar") {
+                    Button("Guardar cambios") { model.saveDraft() }
+                    Button("Guardar como nueva") { model.saveDraft(asNew: true) }
+                }
+                .fontWeight(.semibold)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+
+    private var form: some View {
         Form {
             Section {
                 TextField("Nombre", text: draft.name)
                 Toggle("Blanco y negro", isOn: Binding(
                     get: { draft.wrappedValue.recipe.mono != 0 },
                     set: { draft.wrappedValue.recipe.mono = $0 ? 1 : 0 }))
-            }
-            ForEach(FilmRecipe.Group.allCases) { group in
-                Section(group.title) {
-                    ForEach(FilmRecipe.parameters.filter { $0.group == group }) { parameter in
-                        RecipeSlider(title: parameter.name,
-                                     value: draft.recipe[dynamicMember: parameter.keyPath],
-                                     range: parameter.range,
-                                     neutral: FilmRecipe.neutral[keyPath: parameter.keyPath])
-                    }
-                }
             }
             Section {
                 RecipeSlider(title: "Grano", value: double(draft.grain), range: 0...1, neutral: 0)
@@ -46,6 +64,16 @@ struct RecipeEditor: View {
                 Text("Efectos")
             } footer: {
                 Text("Tocá el valor de un slider para volverlo a neutro.")
+            }
+            ForEach(FilmRecipe.Group.allCases) { group in
+                Section(group.title) {
+                    ForEach(FilmRecipe.parameters.filter { $0.group == group }) { parameter in
+                        RecipeSlider(title: parameter.name,
+                                     value: draft.recipe[dynamicMember: parameter.keyPath],
+                                     range: parameter.range,
+                                     neutral: FilmRecipe.neutral[keyPath: parameter.keyPath])
+                    }
+                }
             }
             Section {
                 if let original = draft.wrappedValue.original {
@@ -68,23 +96,8 @@ struct RecipeEditor: View {
                 }
             }
         }
-    }
-
-    @ToolbarContentBuilder
-    private func toolbar(_ draft: LookDraft) -> some ToolbarContent {
-        ToolbarItem(placement: .cancellationAction) {
-            Button("Cancelar") { model.cancelEditing() }
-        }
-        ToolbarItem(placement: .confirmationAction) {
-            if draft.editingID == nil {
-                Button("Guardar") { model.saveDraft() }
-            } else {
-                Menu("Guardar") {
-                    Button("Guardar cambios") { model.saveDraft() }
-                    Button("Guardar como nueva") { model.saveDraft(asNew: true) }
-                }
-            }
-        }
+        .scrollContentBackground(.hidden)
+        .environment(\.defaultMinListRowHeight, 36)
     }
 
     private func double(_ value: Binding<Float>) -> Binding<Double> {
@@ -99,17 +112,18 @@ private struct RecipeSlider: View {
     let neutral: Double
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text(title).font(.callout)
+                Text(title).font(.subheadline)
                 Spacer()
                 Button(value.formatted(.number.precision(.fractionLength(2)))) { value = neutral }
-                    .font(.callout.monospacedDigit())
+                    .font(.subheadline.monospacedDigit())
                     .foregroundStyle(value == neutral ? .secondary : .primary)
                     .buttonStyle(.borderless)
                     .accessibilityHint("Vuelve a \(neutral.formatted())")
             }
             Slider(value: $value, in: range)
+                .controlSize(.small)
         }
     }
 }

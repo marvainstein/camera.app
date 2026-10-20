@@ -214,8 +214,10 @@ cada Look.
 - El editor tiene un slider por parámetro de la receta (agrupados en Tono, Color y Virado), B/N,
   grano, nitidez, claridad y viñeteo. Tocar el valor lo vuelve a neutro. Los rangos están en
   `FilmRecipe.parameters` (`RecipeParameters.swift`).
-- Se ve en vivo: el editor ocupa media pantalla y el visor sigue arriba. Con cada cambio se genera
-  un LUT 25³ (milisegundos) y, si los sliders quedan quietos 300 ms, el de 64³.
+- Se ve en vivo: el editor es un panel abajo y la imagen entera queda arriba (sin recortar). Con
+  cada cambio se genera un LUT 25³ (milisegundos) y, si los sliders quedan quietos 300 ms, el de 64³.
+- **Comparar** (botón de la barra superior): una línea divide la imagen en antes (izquierda, sin
+  Look ni efectos) y después; se mueve arrastrando.
 - Las recetas propias se guardan en `Application Support/Looks/user-looks.json`, con el mismo
   formato de entrada que `looks.json` (se pueden pasar al catálogo tal cual). Aparecen después de
   los incluidos, con un iconito.

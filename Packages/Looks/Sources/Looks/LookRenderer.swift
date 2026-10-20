@@ -16,14 +16,18 @@ public struct LookParameters: Sendable, Equatable {
     public var grainScale: Float
     /// Semilla del ruido; cambiarla en cada frame anima el grano.
     public var seed: UInt32
+    /// Comparar antes/después (solo preview): posición 0…1 de la línea en el cuadro de salida; a la
+    /// izquierda se ve la fuente sin tocar. 0 = sin comparar.
+    public var split: Float
 
     public init(intensity: Float = 1, grain: Float = 0, effects: LookEffects = .neutral, grainScale: Float = 1.5,
-                seed: UInt32 = 0) {
+                seed: UInt32 = 0, split: Float = 0) {
         self.intensity = intensity
         self.grain = grain
         self.effects = effects
         self.grainScale = grainScale
         self.seed = seed
+        self.split = split
     }
 }
 
@@ -39,6 +43,8 @@ public enum LookContentMode: Sendable {
     case stretch
     /// Llena el destino recortando lo que sobre, como `resizeAspectFill`.
     case aspectFill
+    /// Muestra la fuente entera dentro del destino, con bandas negras, como `resizeAspect`.
+    case aspectFit
 }
 
 /// Debe coincidir con `LookUniforms` en LookShaders.swift.
@@ -57,6 +63,8 @@ struct LookUniforms {
     var halation: Float
     var bloom: Float
     var hasGlow: UInt32
+    var split: Float
+    var splitWidth: Float
 }
 
 /// Aplica un Look (LUT 3D + intensidad + efectos + grano) con Metal. Sirve para el preview en vivo
@@ -222,7 +230,9 @@ public final class LookRenderer: @unchecked Sendable {
             hasBlur: blurred == nil ? 0 : 1,
             halation: effects.halation,
             bloom: effects.bloom,
-            hasGlow: glow == nil ? 0 : 1)
+            hasGlow: glow == nil ? 0 : 1,
+            split: simd_clamp(parameters.split, 0, 1),
+            splitWidth: 3 / Float(max(destination.width, 1)))
         encoder.setRenderPipelineState(try pipeline(for: destination.pixelFormat))
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<LookUniforms>.stride, index: 0)
         encoder.setFragmentBytes(&uniforms, length: MemoryLayout<LookUniforms>.stride, index: 0)
@@ -267,7 +277,7 @@ public final class LookRenderer: @unchecked Sendable {
         }
         var uniforms = LookUniforms(uvTransform: SIMD4(1, 1, 0, 0), intensity: 0, grainAmount: 0, grainCell: 1,
                                     seed: 0, lutSize: 1, hasLUT: 0, sharpness: 0, clarity: 0, vignette: 0, hasBlur: 0,
-                                    halation: 0, bloom: 0, hasGlow: 0)
+                                    halation: 0, bloom: 0, hasGlow: 0, split: 0, splitWidth: 0)
         encoder.setRenderPipelineState(try pipeline(for: target.pixelFormat, fragment: fragment))
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<LookUniforms>.stride, index: 0)
         encoder.setFragmentTexture(source, index: 0)
@@ -278,11 +288,21 @@ public final class LookRenderer: @unchecked Sendable {
 
     /// Escala/desplazamiento de las UV de la fuente para el modo de contenido pedido.
     static func uvTransform(source: (Int, Int), destination: (Int, Int), contentMode: LookContentMode) -> SIMD4<Float> {
-        guard case .aspectFill = contentMode, source.0 > 0, source.1 > 0, destination.0 > 0, destination.1 > 0 else {
+        guard contentMode != .stretch, source.0 > 0, source.1 > 0, destination.0 > 0, destination.1 > 0 else {
             return SIMD4(1, 1, 0, 0)
         }
         let sourceAspect = Float(source.0) / Float(source.1)
         let destinationAspect = Float(destination.0) / Float(destination.1)
+        if contentMode == .aspectFit {
+            // Coordenadas fuera de 0…1 = bandas negras (el shader las pinta).
+            if sourceAspect > destinationAspect {
+                let scale = sourceAspect / destinationAspect
+                return SIMD4(1, scale, 0, (1 - scale) / 2)
+            } else {
+                let scale = destinationAspect / sourceAspect
+                return SIMD4(scale, 1, (1 - scale) / 2, 0)
+            }
+        }
         if sourceAspect > destinationAspect {
             let scale = destinationAspect / sourceAspect
             return SIMD4(scale, 1, (1 - scale) / 2, 0)

@@ -22,6 +22,8 @@ enum LookShaders {
         float halation;       // halation 0…1 (usa la textura de luces difuminadas)
         float bloom;          // bloom 0…1 (ídem)
         uint hasGlow;
+        float split;          // comparar: posición de la línea (0 = no)
+        float splitWidth;     // medio ancho de la línea, en unidades del cuadro
     };
 
     struct VOut {
@@ -106,7 +108,21 @@ enum LookShaders {
                                   sampler sourceSampler [[sampler(0)]],
                                   sampler lutSampler [[sampler(1)]],
                                   constant LookUniforms &u [[buffer(0)]]) {
+        // Fuera de la fuente (bandas del modo aspect fit): negro.
+        if (any(in.uv < 0.0) || any(in.uv > 1.0)) {
+            return float4(0.0, 0.0, 0.0, 1.0);
+        }
         float3 rgb = saturate(source.sample(sourceSampler, in.uv).rgb);
+
+        // Comparar antes/después: a la izquierda de la línea, la fuente sin tocar.
+        if (u.split > 0.0) {
+            if (abs(in.frame.x - u.split) < u.splitWidth) {
+                return float4(0.92, 0.91, 0.88, 1.0);
+            }
+            if (in.frame.x < u.split) {
+                return float4(rgb, 1.0);
+            }
+        }
 
         // Nitidez: realza (o suaviza) la diferencia de luminancia con los 4 vecinos de la fuente.
         if (u.sharpness != 0.0) {
@@ -146,9 +162,9 @@ enum LookShaders {
             rgb = 1.0 - (1.0 - rgb) * (1.0 - saturate(light));
         }
 
-        // Viñeteo: 0 en el centro, máximo en las esquinas del cuadro de salida.
+        // Viñeteo: 0 en el centro, máximo en las esquinas de la foto (igual en el preview y en la foto final).
         if (u.vignette != 0.0) {
-            float r = length(in.frame - 0.5) * 1.41421356;
+            float r = length(in.uv - 0.5) * 1.41421356;
             rgb = saturate(rgb * (1.0 - 0.5 * u.vignette * smoothstep(0.25, 1.0, r)));
         }
 

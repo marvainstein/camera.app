@@ -69,6 +69,10 @@ final class CameraModel {
     var grain: Float = 0 { didSet { updatePreview() } }
     /// Efectos del Look elegido.
     private(set) var effects = LookEffects.neutral
+    /// Comparar antes/después: posición de la línea (0…1) o nil.
+    var compareSplit: Float? { didSet { updatePreview() } }
+    /// Foto de la fototeca o editor abierto: se muestra la imagen entera en vez de llenar la pantalla.
+    var showsWholeFrame: Bool { photo != nil || draft != nil }
     /// Receta abierta en el editor.
     var draft: LookDraft? {
         didSet {
@@ -183,9 +187,12 @@ final class CameraModel {
     }
 
     private func updatePreview() {
+        preview?.contentMode = showsWholeFrame ? .aspectFit : .aspectFill
+        let split = compareSplit ?? 0
         if let draft {
             if let draftTexture { preview?.lut = draftTexture }
-            preview?.parameters = LookParameters(intensity: intensity, grain: draft.grain, effects: draft.effects)
+            preview?.parameters = LookParameters(intensity: intensity, grain: draft.grain, effects: draft.effects,
+                                                 split: split)
             return
         }
         if let texture = selectedTexture {
@@ -193,7 +200,7 @@ final class CameraModel {
         } else if selectedLookID == nil {
             preview?.lut = nil
         }
-        preview?.parameters = LookParameters(intensity: intensity, grain: grain, effects: effects)
+        preview?.parameters = LookParameters(intensity: intensity, grain: grain, effects: effects, split: split)
     }
 
     // MARK: - Editor de recetas
@@ -323,6 +330,7 @@ final class CameraModel {
             preview?.still = loaded.texture
             photo = data
             message = nil
+            updatePreview()
         } catch {
             message = "No se pudo abrir esa foto"
         }
@@ -332,6 +340,7 @@ final class CameraModel {
     func closePhoto() {
         photo = nil
         preview?.still = nil
+        updatePreview()
     }
 
     /// Guarda en Fotos una copia de la foto elegida con el Look, los efectos y el grano.

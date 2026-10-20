@@ -13,6 +13,8 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
     var fallback: MTLTexture?
     /// Foto elegida de la fototeca: mientras está, se muestra en vez de la cámara.
     var still: MTLTexture?
+    /// Cámara en vivo: llenar la pantalla; foto o editor: la imagen entera.
+    var contentMode = LookContentMode.aspectFill
 
     private let textureCache: CVMetalTextureCache
     private let lock = NSLock()
@@ -59,7 +61,7 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
         parameters.seed = frameIndex
         do {
             try looks.encode(commandBuffer: commandBuffer, source: source, lut: lut,
-                             destination: drawable.texture, parameters: parameters, contentMode: .aspectFill)
+                             destination: drawable.texture, parameters: parameters, contentMode: contentMode)
         } catch {
             return
         }

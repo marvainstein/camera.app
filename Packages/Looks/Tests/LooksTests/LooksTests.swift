@@ -427,6 +427,31 @@ private let hasMetal = MTLCreateSystemDefaultDevice() != nil
         #expect(tall.x == 1 && abs(tall.y - 0.5625) < 1e-6)
     }
 
+    @Test func aspectFitShowsTheWholeSourceWithBars() throws {
+        let uv = LookRenderer.uvTransform(source: (200, 100), destination: (100, 100), contentMode: .aspectFit)
+        #expect(uv.x == 1 && uv.y == 2 && uv.z == 0 && uv.w == -0.5)
+        // Fuente apaisada en un destino cuadrado: arriba y abajo quedan bandas negras.
+        let source = try renderer.makeTexture(rgba8: [UInt8](repeating: 200, count: 64 * 32 * 4), width: 64, height: 32)
+        let target = try renderer.makeRenderTarget(width: 64, height: 64)
+        let commandBuffer = try #require(renderer.commandQueue.makeCommandBuffer())
+        try renderer.encode(commandBuffer: commandBuffer, source: source, lut: nil, destination: target,
+                            parameters: LookParameters(), contentMode: .aspectFit)
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        let output = try renderer.readBytes(target)
+        #expect(output[(2 * 64 + 32) * 4] == 0)        // banda de arriba
+        #expect(output[(32 * 64 + 32) * 4] == 200)     // centro: la foto
+        #expect(output[(61 * 64 + 32) * 4] == 0)       // banda de abajo
+    }
+
+    @Test func splitShowsTheOriginalOnTheLeft() throws {
+        let gray = [UInt8](repeating: 100, count: 256 * 64 * 4)
+        let lut = LUT3D(size: 8) { _ in SIMD3(1, 1, 1) }  // todo blanco
+        let output = try render(renderer, lut: lut, parameters: LookParameters(split: 0.5), pixels: gray)
+        #expect(output[(32 * 256 + 40) * 4] == 100)    // izquierda: sin Look
+        #expect(output[(32 * 256 + 220) * 4] == 255)   // derecha: con Look
+    }
+
     @Test func vignetteDarkensCornersOnly() throws {
         let gray = [UInt8](repeating: 160, count: 256 * 64 * 4)
         let output = try render(renderer, lut: nil, parameters: LookParameters(effects: LookEffects(vineteo: 1)),
