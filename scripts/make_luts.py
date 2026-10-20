@@ -161,7 +161,8 @@ RETRATO_400 = dict(calidez=0.5, altas_luces=0.35, contraste=0.08, negros=0.035, 
 #   Saturation s → saturacion × (1 + 0.06·s)      Contrast c → contraste + 0.06·c
 #   Contrast (Highlight) h → altas_luces − 0.06·h   Contrast (Shadow) k → negros − 0.008·k
 #   High/Low Key → brillo                          WB A/G/M → calidez + 0.07·A, tinte ±G/M
-# Nitidez, claridad y viñeteo (shading) no son de LUT: quedan para el módulo Effects.
+# Nitidez, claridad y viñeteo (shading) no son de LUT: van en "effects" (ver EFFECTS) y los
+# aplica el shader, escala −1…1 = ajuste Ricoh / 4.
 
 # Bennet 800 (Negative Film; Sat +3, Hue −1, Contrast +2, H −2, S −4, Clarity −1, WB A14 G2):
 # negativo cálido y con cuerpo, sombras abiertas.
@@ -192,6 +193,15 @@ PLATA_400 = dict(mono=1, calidez=0, brillo=-1, altas_luces=0.21, contraste=0.37,
 CINE_VERDE = dict(calidez=0.28, tinte=1, brillo=2, altas_luces=0.36, contraste=-0.11, negros=0.074,
                   blancos=0.97, verdes_oliva=-6, verdes_apagados=0.1, azules_apagados=0.2,
                   rojos_amarillos=-0.05, saturacion=1.0, sombras_frias=2.0, luces_amarillas=0.8)
+
+
+# Efectos de cada Look ("effects" en looks.json, LookEffects en Swift). Los que faltan valen 0.
+EFFECTS = {
+    "ambar-800": dict(claridad=-0.25),                 # Bennet 800: Clarity −1
+    "diapositiva": dict(claridad=0.5),                 # Kodak Chrome: Clarity +2
+    "plata-400": dict(claridad=0.5, vineteo=0.25),     # Tri-X 400: Clarity +2, Shading +1
+    "cine-verde": dict(nitidez=-0.5),                  # Istanbul: Sharpness −2
+}
 
 
 LOOKS = [
@@ -269,7 +279,10 @@ def generate():
             upsert(manifest, {"id": look_id, "name": name, "lut": filename, "grain": grain})
             print("escrito", filename)
         else:
-            upsert(manifest, {"id": look_id, "name": name, "recipe": dict(spec), "grain": grain})
+            entry = {"id": look_id, "name": name, "recipe": dict(spec), "grain": grain}
+            if look_id in EFFECTS:
+                entry["effects"] = EFFECTS[look_id]
+            upsert(manifest, entry)
             if os.path.exists(path):
                 os.remove(path)  # .lut de antes de las recetas: ya no se usa
                 print("quitado", filename)

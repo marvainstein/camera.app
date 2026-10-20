@@ -76,7 +76,10 @@
         "sombras_frias": 1.2,
         "luces_amarillas": 0.8
       },
-      "grain": 0.3
+      "grain": 0.3,
+      "effects": {
+        "claridad": -0.25
+      }
     },
     {
       "id": "negativo-diario",
@@ -116,7 +119,10 @@
         "sombras_frias": 0.5,
         "luces_amarillas": 0.3
       },
-      "grain": 0.1
+      "grain": 0.1,
+      "effects": {
+        "claridad": 0.5
+      }
     },
     {
       "id": "plata-400",
@@ -137,7 +143,11 @@
         "sombras_frias": 0,
         "luces_amarillas": 0
       },
-      "grain": 0.6
+      "grain": 0.6,
+      "effects": {
+        "claridad": 0.5,
+        "vineteo": 0.25
+      }
     },
     {
       "id": "cine-verde",
@@ -158,7 +168,10 @@
         "sombras_frias": 2.0,
         "luces_amarillas": 0.8
       },
-      "grain": 0.0
+      "grain": 0.0,
+      "effects": {
+        "nitidez": -0.5
+      }
     }
   ]
 }
