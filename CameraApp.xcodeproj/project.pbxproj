@@ -186,6 +186,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Cámara";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Para mostrar el visor y sacar fotos.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Para guardar tus fotos en la fototeca.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -215,6 +216,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Cámara";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Para mostrar el visor y sacar fotos.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Para guardar tus fotos en la fototeca.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
