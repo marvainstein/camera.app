@@ -60,7 +60,7 @@ xcodebuild -workspace CameraApp.xcworkspace -scheme CameraApp -destination 'plat
 ### Correr en un iPhone
 
 En el target CameraApp → Signing & Capabilities, elegir tu Team (y cambiar el bundle id
-`com.marvainstein.cameraapp` si hace falta). La app pide permiso de cámara y de "agregar a Fotos".
+`com.martinyernesto.cameraapp` si hace falta). La app pide permiso de cámara y de "agregar a Fotos".
 ProRAW solo se habilita en modelos Pro.
 
 ### Tests

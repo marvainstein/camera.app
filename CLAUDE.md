@@ -7,6 +7,7 @@ Lo que toda sesión de Claude Code sobre este repo tiene que saber de entrada. E
 
 - El dueño del repo (marvainstein) tiene **cuenta paga de Apple Developer Program**: para
   compartir builds se usa TestFlight (no hace falta proponer alternativas para cuentas gratis).
+  Bundle ID de la app: `com.martinyernesto.cameraapp`.
 - Hay un colaborador con su propia sesión de Claude Code. Lo compartido vive en el repo, los PRs y
   los issues: las sesiones no comparten memoria.
 - Se trabaja en castellano rioplatense (voseo), también en commits, PRs y comentarios del código.
