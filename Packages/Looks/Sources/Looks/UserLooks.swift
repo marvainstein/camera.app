@@ -1,7 +1,8 @@
 import Foundation
 
-/// Looks creados en la app (recetas propias). Se guardan en un JSON con el mismo formato de
-/// entrada que `looks.json`, así una receta propia se puede pasar al catálogo tal cual.
+/// Looks creados en la app (recetas propias, cambios a los incluidos y `.cube` importados). Se
+/// guardan en un JSON con el mismo formato de entrada que `looks.json`, así una receta propia se
+/// puede pasar al catálogo tal cual. Un Look con el mismo id que uno incluido lo reemplaza.
 public struct UserLookStore: Sendable {
     struct File: Codable {
         var version = 1
@@ -18,6 +19,29 @@ public struct UserLookStore: Sendable {
     public static var `default`: UserLookStore? {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             .map { UserLookStore(url: $0.appendingPathComponent("Looks/user-looks.json")) }
+    }
+
+    /// LUTs importados (`.lut` 64³), junto al JSON.
+    public var lutDirectory: URL {
+        url.deletingLastPathComponent().appendingPathComponent("LUTs", isDirectory: true)
+    }
+
+    /// Importa un `.cube`: lo remuestrea a 64³, lo guarda en `lutDirectory` y devuelve el Look, con
+    /// el LUT como base y la receta neutra encima (para retocarlo con los sliders). No lo agrega a la
+    /// lista: eso lo hace quien llama, con `save`.
+    public func importCube(_ text: String, name: String) throws -> Look {
+        let lut = try LUT3D(cube: text, size: LookCatalog.lutSize)
+        let id = Self.newID()
+        try FileManager.default.createDirectory(at: lutDirectory, withIntermediateDirectories: true)
+        try lut.encoded().write(to: lutDirectory.appendingPathComponent(id + ".lut"), options: .atomic)
+        let trimmed = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(LookShare.maxNameLength))
+        return Look(id: id, name: trimmed.isEmpty ? "LUT importado" : trimmed, lut: id + ".lut", recipe: .neutral)
+    }
+
+    /// Borra el `.lut` importado de un Look si ningún otro de `remaining` lo usa.
+    public func removeLUTFile(of look: Look, remaining: [Look]) {
+        guard let file = look.lut, !remaining.contains(where: { $0.lut == file }) else { return }
+        try? FileManager.default.removeItem(at: lutDirectory.appendingPathComponent(file))
     }
 
     /// Id nuevo para una receta propia; no choca con los del catálogo.
@@ -43,7 +67,7 @@ public struct UserLookStore: Sendable {
 /// para importarla pegándola.
 public enum LookShare {
     public enum Error: Swift.Error, Equatable {
-        /// El Look sale de un `.lut`, no de una receta: no hay nada que compartir como texto.
+        /// El Look tiene un LUT base (un `.cube` importado): no entra en un texto.
         case notARecipe
         /// El texto no contiene una receta.
         case noRecipeFound
@@ -61,8 +85,9 @@ public enum LookShare {
         var effects: LookEffects?
     }
 
+    /// Solo recetas sin LUT base: un `.cube` importado no entra en un texto.
     public static func text(for look: Look) throws -> String {
-        guard let recipe = look.recipe else { throw Error.notARecipe }
+        guard let recipe = look.recipe, look.lut == nil else { throw Error.notARecipe }
         let payload = Payload(formato: format, version: 1, name: look.name, recipe: recipe, grain: look.grain,
                               effects: look.effects.flatMap { $0.isNeutral ? nil : $0 })
         let encoder = JSONEncoder()

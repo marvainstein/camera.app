@@ -3,11 +3,11 @@
 
 Uso:
   scripts/make_luts.py generate
-      Regenera los Looks propios. Respeta los importados. Los de película se guardan como receta
-      (parámetros de film_look) en looks.json y la app genera el LUT en el dispositivo; solo los
-      de fórmula fija (identidad, B/N, cálido) se escriben como .lut.
+      Reescribe el catálogo con los Looks de LOOKS (todos recetas: parámetros de film_look que la
+      app convierte en LUT en el dispositivo) y, después, los .cube importados. Borra los .lut que
+      ya no usa ningún Look.
   scripts/make_luts.py export-lut [ID ...] [--out DIR]
-      Escribe a mano el .lut 64³ de Looks propios (por defecto todos), para comparar. No toca
+      Escribe a mano el .lut 64³ de Looks propios o archivados (por defecto todos). No toca
       el catálogo; DIR por defecto es build/luts.
   scripts/make_luts.py export-reference
       Escribe referencias 17³ de cada receta en Packages/Looks/Tests/LooksTests/Resources/,
@@ -323,35 +323,42 @@ EFFECTS = {
 }
 
 
+# Catálogo de la app: pocos y bien distintos. Todos son recetas (Natural es la receta neutra).
 LOOKS = [
-    # (id, nombre visible, función o receta de film_look, grano sugerido)
-    ("identidad", "Natural", look_identidad, 0.0),
-    ("bn-neutro", "B/N Neutro", look_bn_neutro, 0.35),
-    ("calido", "Cálido", look_calido, 0.15),
+    # (id, nombre visible, receta de film_look, grano sugerido)
+    ("natural", "Natural", receta(), 0.0),
     ("dorado-200", "Dorado 200", DORADO_200, 0.3),
     ("retrato-400", "Retrato 400", RETRATO_400, 0.2),
+    ("clasico", "Clásico", CLASICO, 0.15),
+    ("documental", "Documental", DOCUMENTAL, 0.15),
+    ("contemporaneo", "Contemporáneo", CONTEMPORANEO, 0.0),
+    ("puro", "Puro", PURO, 0.0),
+    ("cine", "Cine", CINE, 0.2),
+    ("verde-azulado", "Verde Azulado", VERDE_AZULADO, 0.1),
+    ("blanqueo", "Blanqueo", BLANQUEO, 0.25),
+    ("plata-400", "Plata 400", PLATA_400, 0.6),
+    ("bn-alto-contraste", "B/N Alto Contraste", BN_ALTO_CONTRASTE, 0.3),
+    ("sepia", "Sepia", SEPIA, 0.25),
+]
+
+# Fuera del catálogo (se parecían a otros), guardados por si alguno vuelve: `export-lut` los
+# sigue generando. Los filtros de B/N ahora son el slider "Filtro de color" de cualquier B/N.
+ARCHIVO = [
+    ("identidad", "Identidad", look_identidad, 0.0),
+    ("bn-neutro", "B/N Neutro", look_bn_neutro, 0.35),
+    ("calido", "Cálido", look_calido, 0.15),
     ("ambar-800", "Ámbar 800", AMBAR_800, 0.3),
     ("negativo-diario", "Negativo Diario", NEGATIVO_DIARIO, 0.2),
     ("diapositiva", "Diapositiva", DIAPOSITIVA, 0.1),
-    ("plata-400", "Plata 400", PLATA_400, 0.6),
     ("cine-verde", "Cine Verde", CINE_VERDE, 0.0),
     ("estandar", "Estándar", ESTANDAR, 0.0),
-    ("clasico", "Clásico", CLASICO, 0.15),
-    ("contemporaneo", "Contemporáneo", CONTEMPORANEO, 0.0),
     ("vivido", "Vívido", VIVIDO, 0.0),
-    ("puro", "Puro", PURO, 0.0),
     ("laton", "Latón", LATON, 0.2),
     ("azul", "Azul", AZUL, 0.1),
-    ("verde-azulado", "Verde Azulado", VERDE_AZULADO, 0.1),
-    ("cine", "Cine", CINE, 0.2),
     ("cine-suave", "Cine Suave", CINE_SUAVE, 0.15),
-    ("blanqueo", "Blanqueo", BLANQUEO, 0.25),
-    ("documental", "Documental", DOCUMENTAL, 0.15),
     ("retrato-calido", "Retrato Cálido", RETRATO_CALIDO, 0.2),
-    ("bn-alto-contraste", "B/N Alto Contraste", BN_ALTO_CONTRASTE, 0.3),
     ("plata-suave", "Plata Suave", PLATA_SUAVE, 0.2),
     ("selenio", "Selenio", SELENIO, 0.3),
-    ("sepia", "Sepia", SEPIA, 0.25),
     ("centenario", "Centenario", CENTENARIO, 0.55),
     ("bn-filtro-amarillo", "B/N Filtro Amarillo", bn_filtro(60), 0.3),
     ("bn-filtro-naranja", "B/N Filtro Naranja", bn_filtro(30), 0.3),
@@ -418,33 +425,31 @@ def upsert(manifest, entry):
 
 
 def generate():
+    """Reescribe el catálogo: los Looks de LOOKS en ese orden y, después, los .cube importados."""
     os.makedirs(OUT_DIR, exist_ok=True)
-    manifest = load_manifest()
+    imported = [l for l in load_manifest()["looks"] if "source" in l]
+    entries = []
     for look_id, name, spec, grain in LOOKS:
-        filename = look_id + ".lut"
-        path = os.path.join(OUT_DIR, filename)
-        if callable(spec):
-            write_lut(path, build(spec))
-            upsert(manifest, {"id": look_id, "name": name, "lut": filename, "grain": grain})
-            print("escrito", filename)
-        else:
-            entry = {"id": look_id, "name": name, "recipe": dict(spec), "grain": grain}
-            if look_id in EFFECTS:
-                entry["effects"] = EFFECTS[look_id]
-            upsert(manifest, entry)
-            if os.path.exists(path):
-                os.remove(path)  # .lut de antes de las recetas: ya no se usa
-                print("quitado", filename)
-            print("receta", look_id)
-    save_manifest(manifest)
+        entry = {"id": look_id, "name": name, "recipe": dict(spec), "grain": grain}
+        if look_id in EFFECTS:
+            entry["effects"] = EFFECTS[look_id]
+        entries.append(entry)
+        print("receta", look_id)
+    # .lut que ya no usa ningún Look (los de fórmula fija y los de antes de las recetas).
+    keep = {l["lut"] for l in imported if "lut" in l}
+    for name in os.listdir(OUT_DIR):
+        if name.endswith(".lut") and name not in keep:
+            os.remove(os.path.join(OUT_DIR, name))
+            print("quitado", name)
+    save_manifest({"version": 1, "lutSize": SIZE, "looks": entries + imported})
     print("actualizado looks.json")
 
 
 def export_lut(ids, out_dir):
-    specs = {look_id: spec for look_id, _, spec, _ in LOOKS}
+    specs = {look_id: spec for look_id, _, spec, _ in LOOKS + ARCHIVO}
     for look_id in ids or specs:
         if look_id not in specs:
-            sys.exit("'%s' no es un Look propio (ver LOOKS)" % look_id)
+            sys.exit("'%s' no es un Look propio (ver LOOKS y ARCHIVO)" % look_id)
         os.makedirs(out_dir, exist_ok=True)
         path = os.path.join(out_dir, look_id + ".lut")
         write_lut(path, build(look_fn(specs[look_id])))
@@ -453,12 +458,16 @@ def export_lut(ids, out_dir):
 
 def export_reference():
     os.makedirs(REFERENCE_DIR, exist_ok=True)
+    wanted = set()
     for look_id, _, spec, _ in LOOKS:
-        if callable(spec):
-            continue
         path = os.path.join(REFERENCE_DIR, look_id + ".lut")
         write_lut(path, build(look_fn(spec), REFERENCE_SIZE), REFERENCE_SIZE)
+        wanted.add(look_id + ".lut")
         print("escrito", os.path.relpath(path, ROOT))
+    for name in os.listdir(REFERENCE_DIR):
+        if name.endswith(".lut") and name not in wanted:
+            os.remove(os.path.join(REFERENCE_DIR, name))
+            print("quitado", os.path.relpath(os.path.join(REFERENCE_DIR, name), ROOT))
 
 
 # --- Importación de .cube -------------------------------------------------------
@@ -552,7 +561,7 @@ def add(src, look_id, name, grain, input_space):
 
 
 def remove(look_id):
-    if look_id in {l[0] for l in LOOKS}:
+    if look_id in {l[0] for l in LOOKS + ARCHIVO}:
         sys.exit("'%s' es un Look propio generado por este script; sacalo de LOOKS" % look_id)
     manifest = load_manifest()
     entry = next((l for l in manifest["looks"] if l["id"] == look_id), None)

@@ -117,17 +117,28 @@ public struct FilmRecipe: Sendable, Hashable, Codable {
     }
 
     /// Genera el LUT evaluando la receta en cada nodo de la grilla, un plano B por tarea.
-    public func makeLUT(size: Int = 64) -> LUT3D {
+    ///
+    /// Con `base` (por ejemplo, un `.cube` importado) la receta se aplica sobre la salida de ese LUT:
+    /// la receta neutra lo deja como está.
+    public func makeLUT(size: Int = 64, base: LUT3D? = nil) -> LUT3D {
         let plane = size * size * 4
         var floats = [Float](repeating: 0, count: size * plane)
         let step = 1.0 / Double(size - 1)
+        let baseValues = base?.floatTexels
         floats.withUnsafeMutableBufferPointer { buffer in
             let out = SendableBuffer(base: buffer.baseAddress!)
             DispatchQueue.concurrentPerform(iterations: size) { bi in
                 var i = bi * plane
                 for gi in 0..<size {
                     for ri in 0..<size {
-                        let rgb = apply(Double(ri) * step, Double(gi) * step, Double(bi) * step)
+                        var input = (Double(ri) * step, Double(gi) * step, Double(bi) * step)
+                        if let base, let baseValues {
+                            let v = base.size == size
+                                ? SIMD3(baseValues[i], baseValues[i + 1], baseValues[i + 2])
+                                : base.apply(SIMD3(Float(input.0), Float(input.1), Float(input.2)), values: baseValues)
+                            input = (Double(v.x), Double(v.y), Double(v.z))
+                        }
+                        let rgb = apply(input.0, input.1, input.2)
                         out.base[i] = Float(rgb.0)
                         out.base[i + 1] = Float(rgb.1)
                         out.base[i + 2] = Float(rgb.2)

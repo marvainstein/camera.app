@@ -3,11 +3,13 @@ import Looks
 import PhotosUI
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 struct CameraScreen: View {
     @State private var model = CameraModel()
     @State private var showsManual = false
     @State private var photoItem: PhotosPickerItem?
+    @State private var importsCube = false
 
     var body: some View {
         ZStack {
@@ -46,6 +48,12 @@ struct CameraScreen: View {
                     await model.usePhoto(data)
                 }
                 photoItem = nil
+            }
+        }
+        .fileImporter(isPresented: $importsCube,
+                      allowedContentTypes: [UTType(filenameExtension: "cube") ?? .data, .plainText, .data]) { result in
+            if case .success(let url) = result {
+                Task { await model.importCube(at: url) }
             }
         }
         .sheet(isPresented: $showsManual) {
@@ -234,8 +242,8 @@ struct CameraScreen: View {
                         Button {
                             model.select(look)
                         } label: {
-                            Label(look.name, systemImage: "person.fill")
-                                .labelStyle(UserLookLabelStyle(isUserLook: model.isUserLook(look)))
+                            Label(look.name, systemImage: model.isModified(look) ? "pencil" : "person.fill")
+                                .labelStyle(UserLookLabelStyle(isUserLook: model.isUserLook(look) || model.isModified(look)))
                         }
                         .font(.callout)
                         .padding(.horizontal, 14)
@@ -260,6 +268,7 @@ struct CameraScreen: View {
             Button("Pegar receta", systemImage: "doc.on.clipboard") {
                 model.importRecipe(from: UIPasteboard.general.string ?? "")
             }
+            Button("Importar LUT (.cube)…", systemImage: "square.and.arrow.down") { importsCube = true }
         } label: {
             Image(systemName: "wand.and.stars")
                 .padding(8)
@@ -269,15 +278,19 @@ struct CameraScreen: View {
     }
 
     @ViewBuilder private func lookActions(_ look: Look) -> some View {
-        if look.recipe != nil {
-            Button(model.isUserLook(look) ? "Editar \(look.name)" : "Copiar y editar \(look.name)",
-                   systemImage: "slider.horizontal.3") {
-                model.select(look)
-                model.edit(look)
-            }
-            if let text = model.shareText(for: look) {
-                ShareLink("Compartir receta", item: text, preview: SharePreview(look.name))
-            }
+        Button("Editar \(look.name)", systemImage: "slider.horizontal.3") {
+            model.select(look)
+            model.edit(look)
+        }
+        Button("Duplicar y editar", systemImage: "plus.square.on.square") {
+            model.select(look)
+            model.duplicate(look)
+        }
+        if let text = model.shareText(for: look) {
+            ShareLink("Compartir receta", item: text, preview: SharePreview(look.name))
+        }
+        if model.isModified(look) {
+            Button("Restaurar original", systemImage: "arrow.uturn.backward") { model.restoreOriginal(look) }
         }
         if model.isUserLook(look) {
             Button("Borrar \(look.name)", systemImage: "trash", role: .destructive) { model.delete(look) }

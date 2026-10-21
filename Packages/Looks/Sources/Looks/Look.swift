@@ -4,14 +4,14 @@ import Synchronization
 /// Un Look: LUT 3D + parámetros sugeridos. Se describe en `looks.json` (versionado); los que crea
 /// el usuario, con el mismo formato, en `UserLookStore`.
 ///
-/// El LUT sale de una receta de película (`recipe`, se genera en el dispositivo) o de un
-/// archivo `.lut` precalculado (`lut`).
+/// El LUT sale de una receta de película (`recipe`, se genera en el dispositivo). Un Look puede
+/// tener además un LUT base (`lut`, por ejemplo un `.cube` importado): la receta se aplica encima.
 public struct Look: Sendable, Identifiable, Hashable, Codable {
     public let id: String
     public let name: String
-    /// Nombre del archivo `.lut` dentro del bundle, para los Looks sin receta.
+    /// Archivo `.lut` base (en el bundle o, para los importados, en `UserLookStore.lutDirectory`).
     public let lut: String?
-    /// Receta de película; si está, tiene prioridad sobre `lut`.
+    /// Receta de película; con `lut`, se aplica sobre la salida de ese LUT.
     public let recipe: FilmRecipe?
     /// Grano sugerido (0…1).
     public let grain: Float
@@ -31,7 +31,7 @@ public struct Look: Sendable, Identifiable, Hashable, Codable {
     /// Cambia cuando cambia el LUT del Look (por ejemplo, al editar una receta propia): sirve de
     /// clave para cachear texturas.
     public var lutKey: String {
-        recipe.map { "\(id)-\($0.stableHash)" } ?? id
+        [id, lut, recipe?.stableHash].compactMap { $0 }.joined(separator: "-")
     }
 }
 
@@ -65,14 +65,16 @@ public enum LookCatalog {
             .appendingPathComponent("Looks", isDirectory: true)
     }
 
-    /// LUT del Look. Con receta, lo genera (puede tardar: llamar fuera del main actor) y lo
-    /// cachea en memoria y en `cacheDirectory`; sin receta, lee el `.lut` del bundle.
-    public static func lut(for look: Look, cacheDirectory: URL? = defaultCacheDirectory) throws -> LUT3D {
+    /// LUT del Look. Con receta, lo genera (puede tardar: llamar fuera del main actor), sobre el LUT
+    /// base si tiene uno, y lo cachea en memoria y en `cacheDirectory`; sin receta, lee el `.lut`.
+    /// Los `.lut` se buscan primero en `userLUTDirectory` (importados) y después en el bundle.
+    public static func lut(for look: Look, cacheDirectory: URL? = defaultCacheDirectory,
+                           userLUTDirectory: URL? = UserLookStore.default?.lutDirectory) throws -> LUT3D {
         guard let recipe = look.recipe else {
             guard let file = look.lut else { throw Error.noLUT(look.id) }
-            return try LUT3D(contentsOf: resource(file))
+            return try lutFile(file, userLUTDirectory: userLUTDirectory)
         }
-        let key = cacheKey(id: look.id, recipe: recipe)
+        let key = cacheKey(id: look.id, recipe: recipe, lut: look.lut)
         if let cached = memory.withLock({ $0[key] }) { return cached }
 
         let file = cacheDirectory?.appendingPathComponent(key + ".lut")
@@ -80,7 +82,8 @@ public enum LookCatalog {
         if let file, let stored = try? LUT3D(contentsOf: file), stored.size == lutSize {
             lut = stored
         } else {
-            lut = recipe.makeLUT(size: lutSize)
+            let base = try look.lut.map { try lutFile($0, userLUTDirectory: userLUTDirectory) }
+            lut = recipe.makeLUT(size: lutSize, base: base)
             if let file, let directory = cacheDirectory {
                 // El caché es opcional: si no se puede escribir, se regenera la próxima vez.
                 try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -91,9 +94,18 @@ public enum LookCatalog {
         return lut
     }
 
-    /// id + hash estable de la receta + versión del generador: cambiar cualquiera invalida el caché.
-    static func cacheKey(id: String, recipe: FilmRecipe) -> String {
-        "\(id)-\(recipe.stableHash)-g\(FilmRecipe.generatorVersion)"
+    /// id + LUT base + hash estable de la receta + versión del generador: cambiar cualquiera invalida
+    /// el caché.
+    static func cacheKey(id: String, recipe: FilmRecipe, lut: String? = nil) -> String {
+        [id, lut, recipe.stableHash, "g\(FilmRecipe.generatorVersion)"].compactMap { $0 }.joined(separator: "-")
+    }
+
+    static func lutFile(_ name: String, userLUTDirectory: URL?) throws -> LUT3D {
+        if let user = userLUTDirectory?.appendingPathComponent(name),
+           FileManager.default.fileExists(atPath: user.path) {
+            return try LUT3D(contentsOf: user)
+        }
+        return try LUT3D(contentsOf: resource(name))
     }
 
     static func resource(_ name: String) throws -> URL {

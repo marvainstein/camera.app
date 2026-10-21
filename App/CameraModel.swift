@@ -10,17 +10,20 @@ struct LookDraft: Equatable {
     var recipe: FilmRecipe
     var grain: Float
     var effects: LookEffects
-    /// Receta propia que se está editando; `nil` si el borrador sale de un Look incluido o de cero
-    /// (al guardar se crea una nueva).
+    /// LUT base (un `.cube` importado), que se conserva al guardar.
+    let lut: String?
+    /// Look que se está editando (incluido o propio): al guardar se reemplaza. `nil` = receta nueva
+    /// o copia (al guardar se crea otra).
     let editingID: String?
     /// Como estaba al abrir el editor, para "Volver al original".
     let original: Look?
 
     init(from look: Look, editingID: String?) {
-        name = editingID == nil ? "\(look.name) (mía)" : look.name
+        name = editingID == nil ? "\(look.name) (copia)" : look.name
         recipe = look.recipe ?? .neutral
         grain = look.grain
         effects = look.effects ?? .neutral
+        lut = look.lut
         self.editingID = editingID
         original = look
     }
@@ -30,13 +33,14 @@ struct LookDraft: Equatable {
         recipe = .neutral
         grain = 0
         effects = .neutral
+        lut = nil
         editingID = nil
         original = nil
     }
 
     func look(id: String) -> Look {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        return Look(id: id, name: trimmed.isEmpty ? "Receta propia" : trimmed, recipe: recipe, grain: grain,
+        return Look(id: id, name: trimmed.isEmpty ? "Receta propia" : trimmed, lut: lut, recipe: recipe, grain: grain,
                     effects: effects.isNeutral ? nil : effects)
     }
 }
@@ -100,6 +104,8 @@ final class CameraModel {
     private var loadingLUTs: Set<String> = []
     /// LUT del borrador: primero uno chico mientras se mueven los sliders, después el de 64³.
     private var draftTexture: MTLTexture?
+    /// LUT base del Look en edición (un `.cube` importado), o nil.
+    private var draftBase: LUT3D?
     private var draftTask: Task<Void, Never>?
     /// Tamaño del LUT de vista previa del editor: se genera en milisegundos.
     private static let draftLUTSize = 25
@@ -158,10 +164,17 @@ final class CameraModel {
         } catch {
             message = "No se pudieron cargar tus recetas: \(error)"
         }
-        looks = bundledLooks + userLooks
-        if let first = looks.first(where: { $0.id != "identidad" }) ?? looks.first {
+        rebuildLooks()
+        if let first = looks.first(where: { $0.id != "natural" }) ?? looks.first {
             select(first)
         }
+    }
+
+    /// Los incluidos (con los cambios del usuario encima) y después los propios.
+    private func rebuildLooks() {
+        let bundledIDs = Set(bundledLooks.map(\.id))
+        looks = bundledLooks.map { look in userLooks.first { $0.id == look.id } ?? look }
+            + userLooks.filter { !bundledIDs.contains($0.id) }
     }
 
     func select(_ look: Look) {
@@ -171,8 +184,14 @@ final class CameraModel {
         updatePreview()
     }
 
+    /// Receta creada (o importada) por el usuario, no uno de los incluidos.
     func isUserLook(_ look: Look) -> Bool {
-        userLooks.contains { $0.id == look.id }
+        !bundledLooks.contains { $0.id == look.id } && userLooks.contains { $0.id == look.id }
+    }
+
+    /// Un Look incluido que el usuario modificó.
+    func isModified(_ look: Look) -> Bool {
+        bundledLooks.contains { $0.id == look.id } && userLooks.contains { $0.id == look.id }
     }
 
     /// Genera (receta) o lee (.lut) el LUT del Look elegido fuera del main actor y cachea la
@@ -232,13 +251,36 @@ final class CameraModel {
 
     // MARK: - Editor de recetas
 
-    /// Abre el editor sobre un Look: si es una receta propia se edita; si es uno incluido, se
-    /// edita una copia. Los Looks de `.lut` arrancan de la receta neutra.
+    /// Abre el editor sobre un Look (incluido o propio): al guardar se reemplaza.
     func edit(_ look: Look) {
-        draft = LookDraft(from: look, editingID: isUserLook(look) ? look.id : nil)
+        loadDraftBase(of: look)
+        draft = LookDraft(from: look, editingID: look.id)
+    }
+
+    /// Abre el editor sobre una copia del Look: al guardar se crea otro.
+    func duplicate(_ look: Look) {
+        loadDraftBase(of: look)
+        draft = LookDraft(from: look, editingID: nil)
+    }
+
+    /// LUT base del Look (si es un `.cube` importado), para generar la vista previa del editor.
+    private func loadDraftBase(of look: Look) {
+        draftBase = look.lut.flatMap { try? LookCatalog.lut(for: Look(id: look.id, name: look.name, lut: $0)) }
+    }
+
+    /// Vuelve un Look incluido a como viene en la app.
+    func restoreOriginal(_ look: Look) {
+        guard isModified(look) else { return }
+        userLooks.removeAll { $0.id == look.id }
+        guard persistUserLooks() else { return }
+        if let original = looks.first(where: { $0.id == look.id }) {
+            select(original)
+        }
+        message = "\(look.name): original restaurado"
     }
 
     func newRecipe() {
+        draftBase = nil
         draft = LookDraft()
     }
 
@@ -246,7 +288,7 @@ final class CameraModel {
         draft = nil
     }
 
-    /// Guarda el borrador como receta propia (la misma que se editaba o una nueva) y la elige.
+    /// Guarda el borrador (reemplazando el Look que se editaba, o como uno nuevo) y lo elige.
     func saveDraft(asNew: Bool = false) {
         guard let draft else { return }
         let id = (asNew ? nil : draft.editingID) ?? UserLookStore.newID()
@@ -269,10 +311,36 @@ final class CameraModel {
         guard isUserLook(look) else { return }
         userLooks.removeAll { $0.id == look.id }
         guard persistUserLooks() else { return }
-        if selectedLookID == look.id, let first = looks.first(where: { $0.id != "identidad" }) ?? looks.first {
+        userStore?.removeLUTFile(of: look, remaining: userLooks)
+        if selectedLookID == look.id, let first = looks.first(where: { $0.id != "natural" }) ?? looks.first {
             select(first)
         }
         message = "Borrada: \(look.name)"
+    }
+
+    /// Importa un LUT `.cube` del usuario como receta (el LUT de base, sliders encima).
+    func importCube(at url: URL) async {
+        guard let userStore else { return }
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        let name = url.deletingPathExtension().lastPathComponent
+        do {
+            let data = try Data(contentsOf: url)
+            let look = try await Task.detached(priority: .userInitiated) {
+                let text = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
+                return try userStore.importCube(text, name: name)
+            }.value
+            userLooks.append(look)
+            guard persistUserLooks() else { return }
+            select(look)
+            message = "Importado: \(look.name)"
+        } catch LUT3D.CubeError.has1DLUT {
+            message = "Ese .cube tiene un LUT 1D o shaper: todavía no se puede importar"
+        } catch LUT3D.CubeError.notA3DLUT {
+            message = "Ese archivo no es un LUT 3D .cube"
+        } catch {
+            message = "No se pudo importar el .cube: \(error)"
+        }
     }
 
     /// Importa una receta compartida como texto (por ejemplo, desde el portapapeles).
@@ -297,12 +365,12 @@ final class CameraModel {
         do {
             guard let userStore else { throw CocoaError(.fileNoSuchFile) }
             try userStore.save(userLooks)
-            looks = bundledLooks + userLooks
+            rebuildLooks()
             return true
         } catch {
             message = "No se pudo guardar: \(error)"
             userLooks = (try? userStore?.load()) ?? userLooks
-            looks = bundledLooks + userLooks
+            rebuildLooks()
             return false
         }
     }
@@ -311,6 +379,7 @@ final class CameraModel {
     /// 64³. Cada cambio cancela lo pendiente del anterior.
     private func scheduleDraftLUT() {
         draftTask?.cancel()
+        let base = draftBase
         guard let recipe = draft?.recipe, let renderer = preview?.looks else {
             draftTask = nil
             draftTexture = nil
@@ -324,7 +393,7 @@ final class CameraModel {
                 }
                 guard !Task.isCancelled else { return }
                 let loaded = try? await Task.detached(priority: .userInitiated) {
-                    LoadedTexture(texture: try renderer.makeLUTTexture(recipe.makeLUT(size: size)))
+                    LoadedTexture(texture: try renderer.makeLUTTexture(recipe.makeLUT(size: size, base: base)))
                 }.value
                 guard let loaded, !Task.isCancelled else { return }
                 draftTexture = loaded.texture

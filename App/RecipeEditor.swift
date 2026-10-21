@@ -91,7 +91,15 @@ struct RecipeEditor: View {
                     ShareLink("Compartir receta", item: text,
                               preview: SharePreview(draft.wrappedValue.name.isEmpty ? "Receta" : draft.wrappedValue.name))
                 }
-                if let id = draft.wrappedValue.editingID, let look = model.userLooks.first(where: { $0.id == id }) {
+                if let id = draft.wrappedValue.editingID, let look = model.looks.first(where: { $0.id == id }),
+                   model.isModified(look) {
+                    Button("Restaurar original") {
+                        model.cancelEditing()
+                        model.restoreOriginal(look)
+                    }
+                }
+                if let id = draft.wrappedValue.editingID, let look = model.looks.first(where: { $0.id == id }),
+                   model.isUserLook(look) {
                     Button("Borrar receta", role: .destructive) { confirmsDelete = true }
                         .confirmationDialog("¿Borrar \(look.name)?", isPresented: $confirmsDelete, titleVisibility: .visible) {
                             Button("Borrar", role: .destructive) {
