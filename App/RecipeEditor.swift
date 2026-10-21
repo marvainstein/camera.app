@@ -29,6 +29,12 @@ struct RecipeEditor: View {
             Spacer()
             Text(draft.wrappedValue.editingID == nil ? "Nueva receta" : "Editar receta")
                 .font(.headline)
+            Button {
+                model.compareSplit = model.compareSplit == nil ? 0.5 : nil
+            } label: {
+                Image(systemName: model.compareSplit == nil ? "square.split.2x1" : "square.split.2x1.fill")
+            }
+            .accessibilityLabel(model.compareSplit == nil ? "Comparar antes y después" : "Dejar de comparar")
             Spacer()
             if draft.wrappedValue.editingID == nil {
                 Button("Guardar") { model.saveDraft() }

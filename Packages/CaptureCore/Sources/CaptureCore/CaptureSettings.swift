@@ -15,10 +15,44 @@ public enum WhiteBalanceSetting: Sendable, Hashable {
     case manual(temperature: Float, tint: Float)
 }
 
-public enum PhotoFormat: String, Sendable, Hashable, CaseIterable {
-    case heic
-    /// Apple ProRAW (DNG) + HEIC procesado al lado.
-    case proRAW
+/// Qué guarda cada toma. RAW es Apple ProRAW donde está (iPhone Pro) y, si no, el RAW del sensor
+/// (Bayer, sin el procesado de Apple). Con RAW + JPG/HEIC los dos quedan en la misma foto de Fotos.
+public enum PhotoFormat: String, Sendable, Hashable, CaseIterable, Identifiable {
+    case rawJPEG = "RAW + JPG"
+    case rawHEIC = "RAW + HEIC"
+    case jpeg = "JPG"
+    case heic = "HEIC"
+    case raw = "RAW"
+
+    public var id: String { rawValue }
+
+    public enum Processed: Sendable, Hashable {
+        case jpeg, heic
+    }
+
+    /// La imagen procesada (a la que se le aplica el Look), si hay.
+    public var processed: Processed? {
+        switch self {
+        case .rawJPEG, .jpeg: .jpeg
+        case .rawHEIC, .heic: .heic
+        case .raw: nil
+        }
+    }
+
+    public var includesRAW: Bool {
+        switch self {
+        case .rawJPEG, .rawHEIC, .raw: true
+        case .jpeg, .heic: false
+        }
+    }
+
+    /// El mismo formato sin RAW, para cámaras que no lo ofrecen.
+    public var withoutRAW: PhotoFormat {
+        switch self {
+        case .rawJPEG, .jpeg, .raw: .jpeg
+        case .rawHEIC, .heic: .heic
+        }
+    }
 }
 
 /// Lo que el usuario eligió en la UI. Los valores `nil` significan "automático".
@@ -32,7 +66,7 @@ public struct CaptureSettings: Sendable, Hashable {
 
     public init(program: ExposureProgram = .program, exposureBias: Float = 0, iso: Float? = nil,
                 shutterSeconds: Double? = nil, whiteBalance: WhiteBalanceSetting = .auto,
-                photoFormat: PhotoFormat = .heic) {
+                photoFormat: PhotoFormat = .rawJPEG) {
         self.program = program
         self.exposureBias = exposureBias
         self.iso = iso

@@ -2,6 +2,7 @@ import CaptureCore
 import Looks
 import Metal
 import Observation
+import UniformTypeIdentifiers
 
 /// Receta en edición. Mientras existe, el preview muestra el borrador en vez del Look elegido.
 struct LookDraft: Equatable {
@@ -69,6 +70,15 @@ final class CameraModel {
     var grain: Float = 0 { didSet { updatePreview() } }
     /// Efectos del Look elegido.
     private(set) var effects = LookEffects.neutral
+    /// Recorte por focal y formato: marco en el visor, foto recortada al guardar.
+    var framing = Framing() { didSet { updatePreview() } }
+    /// Focal equivalente del lente de la foto de la fototeca (de su EXIF).
+    private var photoFocalLength: Double?
+    /// Focal equivalente del lente que saca (o sacó) la imagen del visor.
+    var lensFocalLength: Double {
+        if photo != nil { return photoFocalLength ?? 24 }
+        return capabilities?.equivalentFocalLength ?? 24
+    }
     /// Comparar antes/después: posición de la línea (0…1) o nil.
     var compareSplit: Float? { didSet { updatePreview() } }
     /// Foto de la fototeca o editor abierto: se muestra la imagen entera en vez de llenar la pantalla.
@@ -115,6 +125,7 @@ final class CameraModel {
         guard CameraController.isCameraAvailable else {
             preview.fallback = try? preview.looks.makeTexture(rgba8: TestPattern.rgba8(), width: 1080, height: 1920)
             status = .noCamera
+            updatePreview()
             return
         }
         guard await CameraController.requestAccess() else {
@@ -124,8 +135,13 @@ final class CameraModel {
         do {
             camera.setFrameHandler { [preview] frame in preview.enqueue(frame) }
             capabilities = try await camera.configure()
+            // Sin RAW en este iPhone: el mismo formato sin RAW.
+            if capabilities?.isRAWSupported == false, settings.photoFormat.includesRAW {
+                settings.photoFormat = settings.photoFormat.withoutRAW
+            }
             camera.start()
             status = .running
+            updatePreview()
         } catch {
             status = .failed(String(describing: error))
         }
@@ -186,13 +202,23 @@ final class CameraModel {
         selectedLook.flatMap { lutTextures[$0.lutKey] }
     }
 
+    /// Tamaño (o proporción) de la imagen del visor, para ubicar el marco del recorte.
+    private var sourceSize: CGSize {
+        if let still = preview?.still { return CGSize(width: still.width, height: still.height) }
+        if status != .running, let fallback = preview?.fallback {
+            return CGSize(width: fallback.width, height: fallback.height)
+        }
+        return CGSize(width: 3, height: 4)  // cámara: preset .photo, 4:3 en vertical
+    }
+
     private func updatePreview() {
         preview?.contentMode = showsWholeFrame ? .aspectFit : .aspectFill
         let split = compareSplit ?? 0
+        let frame = framing.isFullFrame ? nil : framing.rect(in: sourceSize, lensFocalLength: lensFocalLength)
         if let draft {
             if let draftTexture { preview?.lut = draftTexture }
             preview?.parameters = LookParameters(intensity: intensity, grain: draft.grain, effects: draft.effects,
-                                                 split: split)
+                                                 split: split, frame: frame)
             return
         }
         if let texture = selectedTexture {
@@ -200,7 +226,8 @@ final class CameraModel {
         } else if selectedLookID == nil {
             preview?.lut = nil
         }
-        preview?.parameters = LookParameters(intensity: intensity, grain: grain, effects: effects, split: split)
+        preview?.parameters = LookParameters(intensity: intensity, grain: grain, effects: effects, split: split,
+                                             frame: frame)
     }
 
     // MARK: - Editor de recetas
@@ -329,6 +356,7 @@ final class CameraModel {
             }.value
             preview?.still = loaded.texture
             photo = data
+            photoFocalLength = Framing.lensFocalLength(ofPhoto: data)
             message = nil
             updatePreview()
         } catch {
@@ -345,19 +373,16 @@ final class CameraModel {
 
     /// Guarda en Fotos una copia de la foto elegida con el Look, los efectos y el grano.
     private func savePhotoWithLook(_ data: Data) async {
-        guard !isCapturing, let preview else { return }
-        guard let lut = selectedTexture else {
+        guard !isCapturing else { return }
+        guard let job = bakeJob() else {
             message = "Esperá a que cargue el Look"
             return
         }
         isCapturing = true
         defer { isCapturing = false }
-        let job = BakeJob(renderer: preview.looks, lut: lut,
-                          parameters: LookParameters(intensity: intensity, grain: grain, effects: effects,
-                                                     seed: .random(in: 0...UInt32.max)))
         do {
             let processed = try await Task.detached(priority: .userInitiated) {
-                try job.renderer.renderPhoto(data, lut: job.lut, parameters: job.parameters)
+                try job.render(data)
             }.value
             try await PhotoLibrary.save(processed: processed, raw: nil)
             message = "Copia guardada con \(selectedLook?.name ?? "el Look")"
@@ -366,26 +391,36 @@ final class CameraModel {
         }
     }
 
+    /// Look, efectos, grano y recorte actuales, para aplicarlos a una foto fuera del main actor.
+    private func bakeJob(requiringLUT: Bool = true) -> BakeJob? {
+        guard let renderer = preview?.looks else { return nil }
+        let lut = selectedTexture
+        if requiringLUT, lut == nil { return nil }
+        return BakeJob(renderer: renderer, lut: lut,
+                       parameters: LookParameters(intensity: intensity, grain: grain, effects: effects,
+                                                  seed: .random(in: 0...UInt32.max)),
+                       framing: framing, lensFocalLength: lensFocalLength,
+                       outputType: settings.photoFormat.processed == .heic ? .heic : .jpeg)
+    }
+
     func capture() async {
         if let photo {
             await savePhotoWithLook(photo)
             return
         }
-        guard status == .running, !isCapturing, let preview else { return }
+        guard status == .running, !isCapturing, preview != nil else { return }
         isCapturing = true
         defer { isCapturing = false }
         do {
             var photo = try await camera.capturePhoto(settings: settings)
-            if let processed = photo.processed, let lut = selectedTexture {
-                let job = BakeJob(renderer: preview.looks, lut: lut,
-                                  parameters: LookParameters(intensity: intensity, grain: grain, effects: effects,
-                                                             seed: .random(in: 0...UInt32.max)))
+            // Sin LUT cargado todavía, igual se recorta al marco.
+            if let processed = photo.processed, let job = bakeJob(requiringLUT: false) {
                 photo.processed = try await Task.detached(priority: .userInitiated) {
-                    try job.renderer.renderPhoto(processed, lut: job.lut, parameters: job.parameters)
+                    try job.render(processed)
                 }.value
             }
             try await PhotoLibrary.save(processed: photo.processed, raw: photo.raw)
-            message = photo.raw == nil ? "Guardada (HEIC)" : "Guardada (HEIC + ProRAW)"
+            message = "Guardada (\(settings.photoFormat.rawValue))"
         } catch {
             message = "Error al capturar: \(error)"
         }
@@ -402,6 +437,14 @@ private struct LoadedTexture: @unchecked Sendable {
 /// subida y Metal es seguro entre hilos.
 private struct BakeJob: @unchecked Sendable {
     let renderer: LookRenderer
-    let lut: MTLTexture
+    let lut: MTLTexture?
     let parameters: LookParameters
+    let framing: Framing
+    let lensFocalLength: Double
+    let outputType: UTType
+
+    func render(_ data: Data) throws -> Data {
+        try renderer.renderPhoto(data, lut: lut, parameters: parameters, framing: framing,
+                                 lensFocalLength: lensFocalLength, outputType: outputType)
+    }
 }

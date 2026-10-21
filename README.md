@@ -204,6 +204,19 @@ Solo usar LUTs propios o con licencia que permita distribuirlos dentro de la app
 Formato `.lut`: cabecera de 16 bytes (`LAIKALUT`, versión u32 = 1, tamaño u32 = 64) + 64³ texeles
 RGBA float16 little-endian, R variando más rápido (mismo layout que la textura Metal 3D).
 
+### Formato y encuadre
+
+- **Formato** (menú de la barra superior): RAW + JPG por defecto; también RAW + HEIC, JPG, HEIC o
+  solo RAW. El RAW es Apple ProRAW en los iPhone Pro y el RAW del sensor (Bayer, sin el procesado de
+  Apple) en los demás; en un iPhone sin RAW se usa el mismo formato sin RAW. RAW + JPG quedan en la
+  misma foto de Fotos. El Look se aplica a la imagen procesada; el RAW se guarda intacto.
+- **Encuadre** (como el modo crop de las compactas): una focal más larga que la del lente (28, 35,
+  50, 75 mm, recortando al centro) y un formato (4:3, 3:2, 1:1, 16:9, que sigue la orientación de la
+  foto). El visor muestra el cuadro entero con el marco del recorte y lo de afuera oscurecido; la
+  foto procesada se guarda recortada (el viñeteo y el grano se miden sobre el recorte) y el RAW
+  entero, para poder reencuadrar. La focal del lente sale de su campo de visión
+  (`CameraCapabilities.equivalentFocalLength`) o, en una foto de la fototeca, de su EXIF.
+
 ### Recetas propias (editor)
 
 El botón de la varita, a la izquierda de los Looks, abre el menú de recetas: **Receta nueva**

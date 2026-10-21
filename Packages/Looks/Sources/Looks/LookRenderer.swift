@@ -19,15 +19,19 @@ public struct LookParameters: Sendable, Equatable {
     /// Comparar antes/después (solo preview): posición 0…1 de la línea en el cuadro de salida; a la
     /// izquierda se ve la fuente sin tocar. 0 = sin comparar.
     public var split: Float
+    /// Marco del recorte (solo preview), en coordenadas normalizadas de la fuente: afuera se oscurece
+    /// y el viñeteo se mide sobre el marco. nil = sin recorte.
+    public var frame: CGRect?
 
     public init(intensity: Float = 1, grain: Float = 0, effects: LookEffects = .neutral, grainScale: Float = 1.5,
-                seed: UInt32 = 0, split: Float = 0) {
+                seed: UInt32 = 0, split: Float = 0, frame: CGRect? = nil) {
         self.intensity = intensity
         self.grain = grain
         self.effects = effects
         self.grainScale = grainScale
         self.seed = seed
         self.split = split
+        self.frame = frame
     }
 }
 
@@ -65,6 +69,10 @@ struct LookUniforms {
     var hasGlow: UInt32
     var split: Float
     var splitWidth: Float
+    var frameX: Float
+    var frameY: Float
+    var frameWidth: Float
+    var frameHeight: Float
 }
 
 /// Aplica un Look (LUT 3D + intensidad + efectos + grano) con Metal. Sirve para el preview en vivo
@@ -232,7 +240,11 @@ public final class LookRenderer: @unchecked Sendable {
             bloom: effects.bloom,
             hasGlow: glow == nil ? 0 : 1,
             split: simd_clamp(parameters.split, 0, 1),
-            splitWidth: 3 / Float(max(destination.width, 1)))
+            splitWidth: 3 / Float(max(destination.width, 1)),
+            frameX: Float(parameters.frame?.minX ?? 0),
+            frameY: Float(parameters.frame?.minY ?? 0),
+            frameWidth: Float(parameters.frame?.width ?? 0),
+            frameHeight: Float(parameters.frame?.height ?? 0))
         encoder.setRenderPipelineState(try pipeline(for: destination.pixelFormat))
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<LookUniforms>.stride, index: 0)
         encoder.setFragmentBytes(&uniforms, length: MemoryLayout<LookUniforms>.stride, index: 0)
@@ -277,7 +289,8 @@ public final class LookRenderer: @unchecked Sendable {
         }
         var uniforms = LookUniforms(uvTransform: SIMD4(1, 1, 0, 0), intensity: 0, grainAmount: 0, grainCell: 1,
                                     seed: 0, lutSize: 1, hasLUT: 0, sharpness: 0, clarity: 0, vignette: 0, hasBlur: 0,
-                                    halation: 0, bloom: 0, hasGlow: 0, split: 0, splitWidth: 0)
+                                    halation: 0, bloom: 0, hasGlow: 0, split: 0, splitWidth: 0,
+                                    frameX: 0, frameY: 0, frameWidth: 0, frameHeight: 0)
         encoder.setRenderPipelineState(try pipeline(for: target.pixelFormat, fragment: fragment))
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<LookUniforms>.stride, index: 0)
         encoder.setFragmentTexture(source, index: 0)

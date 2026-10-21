@@ -3,6 +3,7 @@ import ImageIO
 import Foundation
 import Metal
 import Testing
+import UniformTypeIdentifiers
 @testable import Looks
 
 /// Imagen de prueba que recorre los 256 niveles de cada canal con combinaciones variadas.
@@ -309,6 +310,44 @@ private let recipeLookIDs = ["dorado-200", "retrato-400", "ambar-800", "negativo
     }
 }
 
+@Suite struct FramingTests {
+    private func close(_ a: CGRect, _ b: CGRect) -> Bool {
+        abs(a.minX - b.minX) < 1e-9 && abs(a.minY - b.minY) < 1e-9 && abs(a.width - b.width) < 1e-9
+            && abs(a.height - b.height) < 1e-9
+    }
+
+    @Test func fullFrameIsTheWholeImage() {
+        let r = Framing().rect(in: CGSize(width: 3, height: 4), lensFocalLength: 24)
+        #expect(close(r, CGRect(x: 0, y: 0, width: 1, height: 1)))
+        #expect(Framing().isFullFrame && !Framing(focalLength: 50).isFullFrame)
+    }
+
+    @Test func doubleFocalLengthKeepsHalfTheSides() {
+        let r = Framing(focalLength: 48).rect(in: CGSize(width: 3, height: 4), lensFocalLength: 24)
+        #expect(close(r, CGRect(x: 0.25, y: 0.25, width: 0.5, height: 0.5)))
+        // Una focal más corta que el lente no agranda nada.
+        let wide = Framing(focalLength: 18).rect(in: CGSize(width: 3, height: 4), lensFocalLength: 24)
+        #expect(close(wide, CGRect(x: 0, y: 0, width: 1, height: 1)))
+    }
+
+    @Test func aspectFollowsTheImageOrientation() {
+        // En una foto vertical 3:4, el 3:2 queda 2:3 (más alto que 3:4): se recortan los costados.
+        let portrait = Framing(aspect: .threeTwo).rect(in: CGSize(width: 3000, height: 4000), lensFocalLength: 24)
+        #expect(abs(portrait.height - 1) < 1e-9)
+        #expect(abs(portrait.width * 3000 / (portrait.height * 4000) - 2.0 / 3.0) < 1e-9)
+        let square = Framing(aspect: .square).rect(in: CGSize(width: 4000, height: 3000), lensFocalLength: 24)
+        #expect(abs(square.width * 4000 - square.height * 3000) < 1e-6 && abs(square.height - 1) < 1e-9)
+    }
+
+    @Test func storedRectFollowsEXIFOrientation() {
+        let r = CGRect(x: 0.1, y: 0.2, width: 0.3, height: 0.4)
+        #expect(close(Framing.storedRect(r, orientation: 1), r))
+        #expect(close(Framing.storedRect(r, orientation: 3), CGRect(x: 0.6, y: 0.4, width: 0.3, height: 0.4)))
+        #expect(close(Framing.storedRect(r, orientation: 6), CGRect(x: 0.2, y: 0.6, width: 0.4, height: 0.3)))
+        #expect(close(Framing.storedRect(r, orientation: 8), CGRect(x: 0.4, y: 0.1, width: 0.4, height: 0.3)))
+    }
+}
+
 /// Algunas VMs de CI no exponen GPU; ahí se saltean los tests que necesitan Metal.
 private let hasMetal = MTLCreateSystemDefaultDevice() != nil
 
@@ -563,6 +602,31 @@ private let hasMetal = MTLCreateSystemDefaultDevice() != nil
         let bytes = try renderer.readBytes(texture)
         #expect(abs(Int(bytes[0]) - 200) <= 3)
         #expect(throws: LookRendererError.self) { try renderer.makePreviewTexture(photo: Data("no es una foto".utf8)) }
+    }
+
+    @Test func renderPhotoCropsToTheFrame() throws {
+        // JPEG vertical (orientación 6, guardado apaisado 64×48) recortado a 2× la focal: 32×24.
+        let pixels = [UInt8](repeating: 120, count: 64 * 48 * 4)
+        let provider = try #require(CGDataProvider(data: Data(pixels) as CFData))
+        let image = try #require(CGImage(
+            width: 64, height: 48, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: 64 * 4,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue), provider: provider,
+            decode: nil, shouldInterpolate: false, intent: .defaultIntent))
+        let data = NSMutableData()
+        let destination = try #require(CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, [kCGImagePropertyOrientation: 6] as CFDictionary)
+        #expect(CGImageDestinationFinalize(destination))
+
+        let output = try renderer.renderPhoto(data as Data, lut: nil, parameters: LookParameters(),
+                                              framing: Framing(focalLength: 48), lensFocalLength: 24,
+                                              outputType: .jpeg)
+        let source = try #require(CGImageSourceCreateWithData(output as CFData, nil))
+        let result = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        #expect(result.width == 32 && result.height == 24)
+        let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        #expect((properties?[kCGImagePropertyOrientation] as? NSNumber)?.intValue == 6)
+        #expect(CGImageSourceGetType(source) as String? == "public.jpeg")
     }
 
     @Test func rendersFullCGImage() throws {
