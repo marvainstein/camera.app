@@ -190,6 +190,7 @@
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Para mostrar el visor y sacar fotos.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Para guardar tus fotos en la fototeca.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Para guardar tus fotos con el original y poder cambiarles el Look o el encuadre después.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIStatusBarHidden = YES;
@@ -221,6 +222,7 @@
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Para mostrar el visor y sacar fotos.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Para guardar tus fotos en la fototeca.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Para guardar tus fotos con el original y poder cambiarles el Look o el encuadre después.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIStatusBarHidden = YES;

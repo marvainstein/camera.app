@@ -44,16 +44,23 @@ struct CameraScreen: View {
         .onChange(of: photoItem) { _, item in
             guard let item else { return }
             Task {
-                if let data = try? await item.loadTransferable(type: Data.self) {
+                // Se edita la misma foto (sin perder el original); si no se puede (sin acceso completo a
+                // Fotos), se abre una copia.
+                var editing = false
+                if let id = item.itemIdentifier {
+                    editing = await model.openPhotoForEditing(localIdentifier: id)
+                }
+                if !editing, let data = try? await item.loadTransferable(type: Data.self) {
                     await model.usePhoto(data)
                 }
                 photoItem = nil
             }
         }
         .fileImporter(isPresented: $importsCube,
-                      allowedContentTypes: [UTType(filenameExtension: "cube") ?? .data, .plainText, .data]) { result in
-            if case .success(let url) = result {
-                Task { await model.importCube(at: url) }
+                      allowedContentTypes: [UTType(filenameExtension: "cube") ?? .data, .plainText, .data],
+                      allowsMultipleSelection: true) { result in
+            if case .success(let urls) = result {
+                Task { await model.importCubes(at: urls) }
             }
         }
         .sheet(isPresented: $showsManual) {
@@ -213,7 +220,9 @@ struct CameraScreen: View {
 
     @ViewBuilder private var statusBanner: some View {
         let text: String? = if model.photo != nil {
-            model.message ?? "Foto de la fototeca: el disparador guarda una copia con el Look"
+            model.message ?? (model.editingPhoto == nil
+                ? "Foto de la fototeca: el disparador guarda una copia con el Look"
+                : "Editando la foto: el disparador guarda los cambios (el original queda)")
         } else {
             switch model.status {
             case .starting, .running: model.message
@@ -268,7 +277,7 @@ struct CameraScreen: View {
             Button("Pegar receta", systemImage: "doc.on.clipboard") {
                 model.importRecipe(from: UIPasteboard.general.string ?? "")
             }
-            Button("Importar LUT (.cube)…", systemImage: "square.and.arrow.down") { importsCube = true }
+            Button("Importar LUTs (.cube)…", systemImage: "square.and.arrow.down") { importsCube = true }
         } label: {
             Image(systemName: "wand.and.stars")
                 .padding(8)
@@ -318,10 +327,10 @@ struct CameraScreen: View {
                     }
                     .accessibilityLabel("Volver a la cámara")
                 } else {
-                    PhotosPicker(selection: $photoItem, matching: .images) {
+                    PhotosPicker(selection: $photoItem, matching: .images, photoLibrary: .shared()) {
                         Image(systemName: "photo.on.rectangle")
                     }
-                    .accessibilityLabel("Probar con una foto")
+                    .accessibilityLabel("Abrir una foto")
                 }
             }
             .font(.title2)
@@ -355,7 +364,8 @@ struct CameraScreen: View {
                 .frame(width: 72, height: 72)
         }
         .disabled((model.status != .running && model.photo == nil) || model.isCapturing)
-        .accessibilityLabel(model.photo == nil ? "Disparar" : "Guardar copia con el Look")
+        .accessibilityLabel(model.photo == nil ? "Disparar"
+                            : model.editingPhoto == nil ? "Guardar copia con el Look" : "Guardar cambios en la foto")
     }
 }
 

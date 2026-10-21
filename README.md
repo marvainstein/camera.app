@@ -156,7 +156,7 @@ valen 0): lo que no entra en un LUT (ver `EFFECTS` en `make_luts.py`).
 En la app (varita o mantener apretado un Look):
 - **Editar** cualquier Look, incluidos los de la app: el cambio lo reemplaza y queda
   **Restaurar original**. **Duplicar y editar** crea otro.
-- **Importar LUT (.cube)…**: el `.cube` (3D, cualquier tamaño, con o sin `DOMAIN_MIN/MAX`, para
+- **Importar LUTs (.cube)…** (uno o varios a la vez): cada `.cube` (3D, cualquier tamaño, con o sin `DOMAIN_MIN/MAX`, para
   entrada sRGB) se remuestrea a 64³ y queda como base de una receta nueva: se retoca con los mismos
   sliders, grano y efectos. Los LUT con shaper 1D o entrada log todavía no se soportan.
 
@@ -224,6 +224,17 @@ RGBA float16 little-endian, R variando más rápido (mismo layout que la textura
   foto procesada se guarda recortada (el viñeteo y el grano se miden sobre el recorte) y el RAW
   entero, para poder reencuadrar. La focal del lente sale de su campo de visión
   (`CameraCapabilities.equivalentFocalLength`) o, en una foto de la fototeca, de su EXIF.
+
+### Edición no destructiva
+
+Cada foto que saca la app se guarda **editable** en Fotos: primero el original (en el formato
+elegido) y encima una edición de Fotos con la versión con el Look (JPEG) y los ajustes de la app
+(`PhotoAdjustment` como `PHAdjustmentData`: Look con su receta, efectos y grano, intensidad,
+encuadre y focal del lente). Al abrir esa foto desde la app (botón de la fototeca), Fotos entrega el
+original y los ajustes: vuelven el Look, los efectos y el encuadre, se pueden cambiar, y el
+disparador guarda los cambios en la misma foto. "Revertir" en Fotos vuelve al original. Una foto
+que no sacó la app también se edita así (se parte de cómo se ve). Hace falta acceso completo a
+Fotos; sin él, la app guarda como antes (solo la versión con el Look) y abre las fotos como copia.
 
 ### Recetas propias (editor)
 
