@@ -133,9 +133,13 @@ public struct FilmRecipe: Sendable, Hashable, Codable {
                     for ri in 0..<size {
                         var input = (Double(ri) * step, Double(gi) * step, Double(bi) * step)
                         if let base, let baseValues {
-                            let v = base.size == size
-                                ? SIMD3(baseValues[i], baseValues[i + 1], baseValues[i + 2])
-                                : base.apply(SIMD3(Float(input.0), Float(input.1), Float(input.2)), values: baseValues)
+                            let v: SIMD3<Float>
+                            if base.size == size {
+                                v = SIMD3<Float>(baseValues[i], baseValues[i + 1], baseValues[i + 2])
+                            } else {
+                                let node = SIMD3<Float>(Float(input.0), Float(input.1), Float(input.2))
+                                v = base.apply(node, values: baseValues)
+                            }
                             input = (Double(v.x), Double(v.y), Double(v.z))
                         }
                         let rgb = apply(input.0, input.1, input.2)
