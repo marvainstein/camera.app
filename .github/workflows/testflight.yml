@@ -1,0 +1,59 @@
+# Sube un build a TestFlight. Se dispara a mano: pestaña Actions → "Subir a TestFlight" → Run workflow.
+#
+# Necesita tres secretos del repo (Settings → Secrets and variables → Actions):
+#   ASC_KEY_ID      Key ID de la clave de API de App Store Connect (acceso Admin)
+#   ASC_ISSUER_ID   Issuer ID
+#   ASC_KEY_P8      contenido completo del AuthKey_XXXXXXXXXX.p8
+# La firma la maneja Xcode en la nube con esa clave (-allowProvisioningUpdates): no hay certificados
+# en el repo. El número de build es 1000 + el número de corrida, así no choca con los subidos a mano.
+name: Subir a TestFlight
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: testflight
+  cancel-in-progress: false
+
+jobs:
+  testflight:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ARCHIVE: ${{ runner.temp }}/CameraApp.xcarchive
+      KEY_PATH: ${{ runner.temp }}/AuthKey.p8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Versión de Xcode
+        run: xcodebuild -version
+      - name: Clave de App Store Connect
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          if [ -z "$ASC_KEY_P8" ] || [ -z "$ASC_KEY_ID" ] || [ -z "$ASC_ISSUER_ID" ]; then
+            echo "Faltan los secretos ASC_KEY_ID, ASC_ISSUER_ID o ASC_KEY_P8 (ver el comentario de este archivo)." >&2
+            exit 1
+          fi
+          printf '%s\n' "$ASC_KEY_P8" > "$KEY_PATH"
+      - name: Archivar
+        run: |
+          xcodebuild -workspace CameraApp.xcworkspace -scheme CameraApp -configuration Release \
+            -destination 'generic/platform=iOS' -archivePath "$ARCHIVE" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$KEY_PATH" -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            CURRENT_PROJECT_VERSION=$((1000 + GITHUB_RUN_NUMBER)) \
+            archive
+      - name: Subir a App Store Connect
+        run: |
+          xcodebuild -exportArchive -archivePath "$ARCHIVE" \
+            -exportOptionsPlist scripts/ExportOptions.plist -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$KEY_PATH" -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+          echo "Build $((1000 + GITHUB_RUN_NUMBER)) subido: aparece en TestFlight cuando Apple termina de procesarlo." >> "$GITHUB_STEP_SUMMARY"
+      - name: Borrar la clave
+        if: always()
+        run: rm -f "$KEY_PATH"

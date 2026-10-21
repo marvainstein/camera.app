@@ -69,6 +69,11 @@ ProRAW solo se habilita en modelos Pro.
 scripts/test.sh
 ```
 
+En GitHub corren solos en cada PR y en cada push a `main` (`.github/workflows/tests.yml`, en una
+Mac de GitHub, sin firma). Para subir a TestFlight sin Xcode: **Actions → Subir a TestFlight → Run
+workflow** (`.github/workflows/testflight.yml`; necesita los secretos `ASC_KEY_ID`,
+`ASC_ISSUER_ID` y `ASC_KEY_P8`, una clave de API de App Store Connect con acceso Admin).
+
 Compila la app y corre en el simulador (el iPhone del runtime de iOS más nuevo, o el que pases como
 argumento) los tests de ambos paquetes (test plan `CameraApp.xctestplan`). Los tests de GPU se
 saltean si la máquina no tiene Metal. También se pueden correr en macOS, más rápido:

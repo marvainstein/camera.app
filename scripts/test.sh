@@ -2,6 +2,7 @@
 # Compila la app y corre todos los tests de los paquetes en el simulador de iOS.
 # Uso: scripts/test.sh ["nombre del simulador"]
 # Sin argumento usa el primer iPhone del runtime de iOS más nuevo instalado.
+# XCODEBUILD_FLAGS agrega opciones a xcodebuild (en CI: CODE_SIGNING_ALLOWED=NO).
 set -eu
 cd "$(dirname "$0")/.."
 if [ $# -gt 0 ]; then
@@ -23,4 +24,4 @@ fi
 echo "Destino: $destination"
 xcodebuild -workspace CameraApp.xcworkspace -scheme CameraApp \
   -destination "$destination" \
-  -derivedDataPath build/DerivedData test
+  -derivedDataPath build/DerivedData ${XCODEBUILD_FLAGS:-} test

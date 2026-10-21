@@ -25,7 +25,12 @@ Finder la muestra "dañada" y no la abre). Clonar en `camera-app`, o renombrarla
 usar **Locate…** para apuntar a la carpeta nueva.
 
 `scripts/test.sh` compila la app y corre los tests de los dos paquetes en el simulador. Si falla,
-pegá la salida en el PR o en un issue.
+pegá la salida en el PR o en un issue. Lo mismo corre solo en GitHub Actions en cada PR (check
+**Tests**).
+
+**TestFlight:** el dueño sube los builds a mano, desde Xcode (Product → Archive → Distribute) o con
+el botón **Actions → Subir a TestFlight → Run workflow**, que usa la clave de App Store Connect
+guardada en los secretos del repo.
 
 Para ver la app: `open CameraApp.xcworkspace`, scheme **CameraApp**, un iPhone simulado y ⌘R. El
 simulador no tiene cámara: muestra un patrón de prueba con el Look aplicado. La varita, a la
