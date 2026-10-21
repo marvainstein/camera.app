@@ -25,7 +25,7 @@ jobs:
       ARCHIVE: ${{ runner.temp }}/CameraApp.xcarchive
       KEY_PATH: ${{ runner.temp }}/AuthKey.p8
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Versión de Xcode
         run: xcodebuild -version
       - name: Clave de App Store Connect
