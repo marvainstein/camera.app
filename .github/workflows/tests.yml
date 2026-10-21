@@ -1,0 +1,27 @@
+# Compila la app y corre los tests de los paquetes en el simulador, en cada PR y en cada push a main.
+# Las sesiones de Claude en la nube no tienen Xcode: así ven los errores de compilación en el PR.
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - name: Versión de Xcode
+        run: xcodebuild -version
+      - name: Compilar y correr los tests
+        env:
+          # El simulador no necesita firma y la Mac de GitHub no tiene la cuenta del equipo.
+          XCODEBUILD_FLAGS: CODE_SIGNING_ALLOWED=NO
+        run: scripts/test.sh

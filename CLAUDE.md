@@ -18,7 +18,11 @@ Lo que toda sesión de Claude Code sobre este repo tiene que saber de entrada. E
 - Las sesiones en la nube **no tienen Xcode**: el Swift no se puede compilar ahí. Validar lo que se
   pueda (Python, `node tools/laboratorio/verificar.js`, el Laboratorio en Chromium headless) y pedir
   que se corra `scripts/test.sh` o ⌘U en el Mac antes de mergear un cambio en Swift.
-- Los errores de compilación llegan pegados desde Xcode: corregirlos en la misma rama del PR.
+- Cada PR corre los tests en GitHub Actions (`.github/workflows/tests.yml`, macOS): leer el resultado
+  y los logs del check del PR para ver los errores de compilación, y corregirlos en la misma rama.
+  También pueden llegar pegados desde Xcode.
+- TestFlight: el dueño sube a mano, desde Xcode o con el workflow "Subir a TestFlight" (botón en
+  Actions; números de build 1000+). No automatizar la subida en cada merge.
 - Expresiones largas con ternarios o SIMD sin tipos explícitos hacen que el compilador no llegue
   a tiempo ("unable to type-check this expression"): partirlas en líneas con tipos.
 - PRs contra `main`. Con los tests en verde y el OK del dueño, se mergea.

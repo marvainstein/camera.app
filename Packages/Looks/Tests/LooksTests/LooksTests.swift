@@ -378,6 +378,22 @@ private let recipeLookIDs = ["natural", "dorado-200", "retrato-400", "clasico", 
     }
 }
 
+@Suite struct PhotoAdjustmentTests {
+    @Test func roundTrip() throws {
+        let look = try #require(try LookCatalog.bundled().first { $0.id == "cine" })
+        let adjustment = PhotoAdjustment(look: look, intensity: 0.8,
+                                         framing: Framing(focalLength: 50, aspect: .threeTwo), lensFocalLength: 24)
+        let decoded = try #require(PhotoAdjustment(data: adjustment.encoded()))
+        #expect(decoded == adjustment)
+        #expect(decoded.look.lutKey == look.lutKey)
+    }
+
+    @Test func ignoresForeignData() {
+        #expect(PhotoAdjustment(data: Data("no es nuestro".utf8)) == nil)
+        #expect(PhotoAdjustment(data: Data("{}".utf8)) == nil)
+    }
+}
+
 @Suite struct FramingTests {
     private func close(_ a: CGRect, _ b: CGRect) -> Bool {
         abs(a.minX - b.minX) < 1e-9 && abs(a.minY - b.minY) < 1e-9 && abs(a.width - b.width) < 1e-9

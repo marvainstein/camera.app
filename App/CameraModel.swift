@@ -65,9 +65,12 @@ final class CameraModel {
     private(set) var capabilities: CameraCapabilities?
     private(set) var isCapturing = false
     private(set) var message: String?
-    /// Foto de la fototeca para probar Looks: mientras está, el visor la muestra en vez de la cámara
-    /// y el disparador guarda una copia con el Look.
+    /// Foto de la fototeca para probar Looks: mientras está, el visor la muestra en vez de la cámara.
+    /// El disparador guarda los cambios en la misma foto (`editingPhoto`) o, si no se pudo abrir para
+    /// editar, una copia con el Look.
     private(set) var photo: Data?
+    /// La foto de Fotos que se está editando, con su original y los ajustes guardados.
+    private(set) var editingPhoto: PhotoLibrary.EditablePhoto?
 
     var selectedLookID: String? { didSet { loadSelectedLUT(); updatePreview() } }
     var intensity: Float = 1 { didSet { updatePreview() } }
@@ -318,29 +321,40 @@ final class CameraModel {
         message = "Borrada: \(look.name)"
     }
 
-    /// Importa un LUT `.cube` del usuario como receta (el LUT de base, sliders encima).
-    func importCube(at url: URL) async {
-        guard let userStore else { return }
-        let accessing = url.startAccessingSecurityScopedResource()
-        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-        let name = url.deletingPathExtension().lastPathComponent
-        do {
-            let data = try Data(contentsOf: url)
-            let look = try await Task.detached(priority: .userInitiated) {
-                let text = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
-                return try userStore.importCube(text, name: name)
-            }.value
-            userLooks.append(look)
-            guard persistUserLooks() else { return }
-            select(look)
-            message = "Importado: \(look.name)"
-        } catch LUT3D.CubeError.has1DLUT {
-            message = "Ese .cube tiene un LUT 1D o shaper: todavía no se puede importar"
-        } catch LUT3D.CubeError.notA3DLUT {
-            message = "Ese archivo no es un LUT 3D .cube"
-        } catch {
-            message = "No se pudo importar el .cube: \(error)"
+    /// Importa uno o varios LUT `.cube` del usuario como recetas (el LUT de base, sliders encima). Si
+    /// alguno falla sigue con los demás, y al final avisa cuántos entraron y cuáles no.
+    func importCubes(at urls: [URL]) async {
+        guard let userStore, !urls.isEmpty else { return }
+        var imported: [Look] = []
+        var failed: [String] = []
+        for url in urls {
+            let accessing = url.startAccessingSecurityScopedResource()
+            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+            let name = url.deletingPathExtension().lastPathComponent
+            do {
+                let data = try Data(contentsOf: url)
+                let look = try await Task.detached(priority: .userInitiated) {
+                    let text = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
+                    return try userStore.importCube(text, name: name)
+                }.value
+                imported.append(look)
+            } catch LUT3D.CubeError.has1DLUT {
+                failed.append("\(url.lastPathComponent) (tiene LUT 1D o shaper)")
+            } catch LUT3D.CubeError.notA3DLUT {
+                failed.append("\(url.lastPathComponent) (no es un LUT 3D)")
+            } catch {
+                failed.append(url.lastPathComponent)
+            }
         }
+        if !imported.isEmpty {
+            userLooks.append(contentsOf: imported)
+            guard persistUserLooks() else { return }
+            select(imported[0])
+        }
+        let summary = urls.count == 1 && failed.isEmpty
+            ? "Importado: \(imported[0].name)"
+            : "Importados \(imported.count) de \(urls.count)"
+        message = failed.isEmpty ? summary : summary + " · no se pudo: " + failed.joined(separator: ", ")
     }
 
     /// Importa una receta compartida como texto (por ejemplo, desde el portapapeles).
@@ -433,35 +447,96 @@ final class CameraModel {
         }
     }
 
+    /// Abre una foto de Fotos para editarla sin perder el original. Si la sacó (o editó) esta app,
+    /// vuelve a poner el Look, los efectos, la intensidad y el encuadre que tenía. Devuelve false si no
+    /// se pudo (por ejemplo, sin acceso completo a Fotos): entonces conviene abrirla como copia.
+    func openPhotoForEditing(localIdentifier: String) async -> Bool {
+        do {
+            let editable = try await PhotoLibrary.openForEditing(localIdentifier: localIdentifier,
+                                                                 format: Self.adjustmentFormat)
+            await usePhoto(editable.original)
+            guard photo != nil else { return false }
+            editingPhoto = editable
+            if let data = editable.adjustment, let adjustment = PhotoAdjustment(data: data) {
+                restore(adjustment)
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Vuelve a poner lo aplicado a una foto. Busca el mismo Look (misma receta) o, si cambió, el de
+    /// mismo id; los efectos, el grano y el encuadre se toman de la foto.
+    private func restore(_ adjustment: PhotoAdjustment) {
+        let stored = adjustment.look
+        if let look = looks.first(where: { $0.lutKey == stored.lutKey }) ?? looks.first(where: { $0.id == stored.id }) {
+            select(look)
+            if look.lutKey != stored.lutKey {
+                message = "La receta de \(look.name) cambió desde que sacaste la foto"
+            }
+        } else {
+            message = "El Look de esta foto ya no está en la lista"
+        }
+        grain = stored.grain
+        effects = stored.effects ?? .neutral
+        intensity = adjustment.intensity
+        photoFocalLength = adjustment.lensFocalLength
+        framing = adjustment.framing
+        updatePreview()
+    }
+
     /// Vuelve a la cámara (o al patrón de prueba).
     func closePhoto() {
         photo = nil
+        editingPhoto = nil
         preview?.still = nil
         updatePreview()
     }
 
-    /// Guarda en Fotos una copia de la foto elegida con el Look, los efectos y el grano.
+    static let adjustmentFormat = PhotoLibrary.AdjustmentFormat(identifier: PhotoAdjustment.formatIdentifier,
+                                                                version: PhotoAdjustment.formatVersion)
+
+    /// Lo aplicado ahora (Look, efectos, grano, intensidad, encuadre), para guardar con la foto.
+    private func currentAdjustment() throws -> Data {
+        let base = selectedLook ?? Look(id: "natural", name: "Natural", recipe: .neutral)
+        let look = Look(id: base.id, name: base.name, lut: base.lut, recipe: base.recipe, grain: grain,
+                        effects: effects.isNeutral ? nil : effects)
+        return try PhotoAdjustment(look: look, intensity: intensity, framing: framing,
+                                   lensFocalLength: lensFocalLength).encoded()
+    }
+
+    /// Foto de la fototeca: guarda los cambios en la misma foto (el original queda, y se puede volver a
+    /// editar o revertir en Fotos) o, si no se pudo abrir para editar, una copia con el Look.
     private func savePhotoWithLook(_ data: Data) async {
         guard !isCapturing else { return }
-        guard let job = bakeJob() else {
+        guard let job = bakeJob(outputType: .jpeg) else {
             message = "Esperá a que cargue el Look"
             return
         }
         isCapturing = true
         defer { isCapturing = false }
         do {
-            let processed = try await Task.detached(priority: .userInitiated) {
+            let rendered = try await Task.detached(priority: .userInitiated) {
                 try job.render(data)
             }.value
-            try await PhotoLibrary.save(processed: processed, raw: nil)
-            message = "Copia guardada con \(selectedLook?.name ?? "el Look")"
+            if let editingPhoto {
+                try await PhotoLibrary.saveEdit(of: editingPhoto, rendered: rendered, adjustment: currentAdjustment(),
+                                                format: Self.adjustmentFormat)
+                // La foto ahora tiene esta edición: reabrirla para que el próximo guardado parta de acá.
+                _ = await openPhotoForEditing(localIdentifier: editingPhoto.localIdentifier)
+                message = "Cambios guardados (en Fotos se pueden revertir)"
+            } else {
+                try await PhotoLibrary.save(processed: rendered, raw: nil)
+                message = "Copia guardada con \(selectedLook?.name ?? "el Look")"
+            }
         } catch {
             message = "No se pudo guardar: \(error)"
         }
     }
 
     /// Look, efectos, grano y recorte actuales, para aplicarlos a una foto fuera del main actor.
-    private func bakeJob(requiringLUT: Bool = true) -> BakeJob? {
+    private func bakeJob(requiringLUT: Bool = true, outputType: UTType? = nil) -> BakeJob? {
         guard let renderer = preview?.looks else { return nil }
         let lut = selectedTexture
         if requiringLUT, lut == nil { return nil }
@@ -469,7 +544,7 @@ final class CameraModel {
                        parameters: LookParameters(intensity: intensity, grain: grain, effects: effects,
                                                   seed: .random(in: 0...UInt32.max)),
                        framing: framing, lensFocalLength: lensFocalLength,
-                       outputType: settings.photoFormat.processed == .heic ? .heic : .jpeg)
+                       outputType: outputType ?? (settings.photoFormat.processed == .heic ? .heic : .jpeg))
     }
 
     func capture() async {
@@ -481,14 +556,19 @@ final class CameraModel {
         isCapturing = true
         defer { isCapturing = false }
         do {
-            var photo = try await camera.capturePhoto(settings: settings)
-            // Sin LUT cargado todavía, igual se recorta al marco.
-            if let processed = photo.processed, let job = bakeJob(requiringLUT: false) {
-                photo.processed = try await Task.detached(priority: .userInitiated) {
+            let photo = try await camera.capturePhoto(settings: settings)
+            // Sin LUT cargado todavía, igual se recorta al marco. La versión con el Look va en JPEG (es
+            // lo que acepta una edición de Fotos); el original queda en el formato elegido.
+            if let processed = photo.processed, let job = bakeJob(requiringLUT: false, outputType: .jpeg) {
+                let rendered = try await Task.detached(priority: .userInitiated) {
                     try job.render(processed)
                 }.value
+                try await PhotoLibrary.saveEditable(original: processed, rendered: rendered,
+                                                    adjustment: currentAdjustment(), format: Self.adjustmentFormat,
+                                                    raw: photo.raw)
+            } else {
+                try await PhotoLibrary.save(processed: photo.processed, raw: photo.raw)
             }
-            try await PhotoLibrary.save(processed: photo.processed, raw: photo.raw)
             message = "Guardada (\(settings.photoFormat.rawValue))"
         } catch {
             message = "Error al capturar: \(error)"
