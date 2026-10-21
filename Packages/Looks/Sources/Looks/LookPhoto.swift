@@ -31,20 +31,44 @@ extension LookRenderer {
         return try makeTexture(rgba8: pixels, width: width, height: height)
     }
 
-    /// Decodifica una foto (HEIC/JPEG), le aplica el Look y la vuelve a codificar como HEIC,
-    /// conservando los metadatos (EXIF, orientación, etc.).
+    /// Decodifica una foto (HEIC/JPEG), le aplica el Look y la vuelve a codificar (HEIC o JPEG según
+    /// `outputType`), conservando los metadatos (EXIF, orientación, etc.).
+    ///
+    /// Con `framing` la foto se recorta al marco antes de aplicar el Look (así el viñeteo y el grano
+    /// se miden sobre el recorte); `lensFocalLength` es la focal equivalente del lente que la sacó.
     public func renderPhoto(_ data: Data, lut: MTLTexture?, parameters: LookParameters,
-                            quality: Double = 0.9) throws -> Data {
+                            framing: Framing = Framing(), lensFocalLength: Double = 24,
+                            outputType: UTType = .heic, quality: Double = 0.9) throws -> Data {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
+              var image = CGImageSourceCreateImageAtIndex(source, 0, nil)
         else { throw LookRendererError.unsupportedImage }
         var properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] ?? [:]
         properties[kCGImageDestinationLossyCompressionQuality] = quality
 
+        if !framing.isFullFrame {
+            let orientation = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
+            let width = CGFloat(image.width), height = CGFloat(image.height)
+            let shown = (5...8).contains(orientation) ? CGSize(width: height, height: width) : CGSize(width: width, height: height)
+            let r = Framing.storedRect(framing.rect(in: shown, lensFocalLength: lensFocalLength), orientation: orientation)
+            let pixels = CGRect(x: r.minX * width, y: r.minY * height, width: r.width * width, height: r.height * height)
+                .integral.intersection(CGRect(x: 0, y: 0, width: width, height: height))
+            if let cropped = image.cropping(to: pixels) {
+                image = cropped
+                // Las dimensiones guardadas en los metadatos ya no valen: que las escriba el destino.
+                properties[kCGImagePropertyPixelWidth] = nil
+                properties[kCGImagePropertyPixelHeight] = nil
+                if var exif = properties[kCGImagePropertyExifDictionary] as? [CFString: Any] {
+                    exif[kCGImagePropertyExifPixelXDimension] = nil
+                    exif[kCGImagePropertyExifPixelYDimension] = nil
+                    properties[kCGImagePropertyExifDictionary] = exif
+                }
+            }
+        }
+
         let rendered = try render(image: image, lut: lut, parameters: parameters)
 
         let output = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(output, UTType.heic.identifier as CFString, 1, nil)
+        guard let destination = CGImageDestinationCreateWithData(output, outputType.identifier as CFString, 1, nil)
         else { throw LookRendererError.unsupportedImage }
         CGImageDestinationAddImage(destination, rendered, properties as CFDictionary)
         guard CGImageDestinationFinalize(destination) else { throw LookRendererError.unsupportedImage }

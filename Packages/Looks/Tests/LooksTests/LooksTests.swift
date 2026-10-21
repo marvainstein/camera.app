@@ -3,6 +3,7 @@ import ImageIO
 import Foundation
 import Metal
 import Testing
+import UniformTypeIdentifiers
 @testable import Looks
 
 /// Imagen de prueba que recorre los 256 niveles de cada canal con combinaciones variadas.
@@ -57,15 +58,18 @@ private func maxChannelDifference(_ a: [UInt8], _ b: [UInt8]) -> Int {
 
     @Test func bundledLooksLoad() throws {
         let looks = try LookCatalog.bundled()
-        #expect(Set(["identidad", "bn-neutro", "calido"]).isSubset(of: looks.map(\.id)))
+        #expect(looks.map(\.id) == ["natural"] + recipeLookIDs.filter { $0 != "natural" })
         for look in looks {
+            #expect(look.recipe != nil && look.lut == nil, "\(look.id): todo Look incluido es una receta")
             #expect(try LookCatalog.lut(for: look, cacheDirectory: nil).size == 64)
         }
     }
 
-    @Test func bundledIdentityMatchesGeneratedIdentity() throws {
-        let identity = try #require(try LookCatalog.bundled().first { $0.id == "identidad" })
-        #expect(try LookCatalog.lut(for: identity) == LUT3D.identity(size: 64))
+    @Test func naturalIsTheIdentity() throws {
+        let natural = try #require(try LookCatalog.bundled().first { $0.id == "natural" })
+        let values = try LookCatalog.lut(for: natural, cacheDirectory: nil).floatTexels
+        let identity = LUT3D.identity(size: 64).floatTexels
+        #expect(zip(values, identity).allSatisfy { abs($0 - $1) <= 1 / 2048 })
     }
 }
 
@@ -75,12 +79,9 @@ private func pythonReference(_ id: String) throws -> LUT3D {
     return try LUT3D(contentsOf: url)
 }
 
-private let recipeLookIDs = ["dorado-200", "retrato-400", "ambar-800", "negativo-diario", "diapositiva",
-                             "plata-400", "cine-verde", "estandar", "clasico", "contemporaneo", "vivido", "puro",
-                             "laton", "azul", "verde-azulado", "cine", "cine-suave", "blanqueo", "documental",
-                             "retrato-calido", "bn-alto-contraste", "plata-suave", "selenio", "sepia", "centenario",
-                             "bn-filtro-amarillo", "bn-filtro-naranja", "bn-filtro-rojo", "bn-filtro-verde",
-                             "bn-filtro-azul"]
+/// El catálogo, en orden.
+private let recipeLookIDs = ["natural", "dorado-200", "retrato-400", "clasico", "documental", "contemporaneo", "puro",
+                             "cine", "verde-azulado", "blanqueo", "plata-400", "bn-alto-contraste", "sepia"]
 
 @Suite struct FilmRecipeTests {
     @Test(arguments: recipeLookIDs)
@@ -171,7 +172,7 @@ private let recipeLookIDs = ["dorado-200", "retrato-400", "ambar-800", "negativo
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("LooksTests-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let look = try #require(try LookCatalog.bundled().first { $0.id == "cine-verde" })
+        let look = try #require(try LookCatalog.bundled().first { $0.id == "verde-azulado" })
         let lut = try LookCatalog.lut(for: look, cacheDirectory: directory)
         let key = LookCatalog.cacheKey(id: look.id, recipe: try #require(look.recipe))
         let file = directory.appendingPathComponent(key + ".lut")
@@ -232,10 +233,10 @@ private let recipeLookIDs = ["dorado-200", "retrato-400", "ambar-800", "negativo
         #expect(plata.effects == LookEffects(claridad: 0.5, vineteo: 0.25))
         let cineLook = try #require(looks.first { $0.id == "cine" })
         #expect(cineLook.effects?.halation == 0.45 && cineLook.effects?.bloom == 0.2)
-        let cine = try #require(looks.first { $0.id == "cine-verde" })
-        #expect(cine.effects?.nitidez == -0.5)
+        let documental = try #require(looks.first { $0.id == "documental" })
+        #expect(documental.effects == LookEffects(vineteo: 0.1))
         #expect(looks.first { $0.id == "dorado-200" }?.effects == LookEffects(halation: 0.25))
-        #expect(looks.first { $0.id == "estandar" }?.effects == nil)
+        #expect(looks.first { $0.id == "natural" }?.effects == nil)
     }
 
     @Test func lutKeyFollowsTheRecipe() throws {
@@ -244,7 +245,8 @@ private let recipeLookIDs = ["dorado-200", "retrato-400", "ambar-800", "negativo
         recipe.calidez = 0.5
         let b = Look(id: "propia-1", name: "A", recipe: recipe)
         #expect(a.lutKey != b.lutKey)
-        #expect(Look(id: "calido", name: "Cálido", lut: "calido.lut").lutKey == "calido")
+        #expect(Look(id: "x", name: "X", lut: "x.lut").lutKey == "x-x.lut")
+        #expect(Look(id: "x", name: "X", lut: "x.lut", recipe: recipe).lutKey != b.lutKey)
     }
 }
 
@@ -304,8 +306,113 @@ private let recipeLookIDs = ["dorado-200", "retrato-400", "ambar-800", "negativo
         #expect(throws: LookShare.Error.noRecipeFound) { try LookShare.look(from: "hola", id: "x") }
         #expect(throws: LookShare.Error.noRecipeFound) { try LookShare.look(from: "{\"name\": \"x\"}", id: "x") }
         #expect(throws: LookShare.Error.notARecipe) {
-            try LookShare.text(for: Look(id: "calido", name: "Cálido", lut: "calido.lut"))
+            try LookShare.text(for: Look(id: "x", name: "X", lut: "x.lut"))
         }
+        #expect(throws: LookShare.Error.notARecipe) {
+            try LookShare.text(for: Look(id: "x", name: "X", lut: "x.lut", recipe: .neutral))
+        }
+    }
+}
+
+@Suite struct CubeImportTests {
+    /// .cube 2³ que invierte los colores, con dominio 0…2 (los valores de entrada se dividen por 2).
+    private let invertCube = """
+    # comentario
+    TITLE "Invertir"
+    LUT_3D_SIZE 2
+    DOMAIN_MIN 0 0 0
+    DOMAIN_MAX 2 2 2
+    1 1 1
+    0 1 1
+    1 0 1
+    0 0 1
+    1 1 0
+    0 1 0
+    1 0 0
+    0 0 0
+    """
+
+    @Test func readsAndResamplesACube() throws {
+        let lut = try LUT3D(cube: invertCube, size: 17)
+        #expect(lut.size == 17)
+        // Entrada 0.5 → dominio 0.25 → invertido 0.75 (trilineal exacto en un 2³ lineal).
+        let out = lut.apply(SIMD3(0.5, 0.5, 0.5))
+        #expect(abs(out.x - 0.75) < 2e-3 && abs(out.y - 0.75) < 2e-3 && abs(out.z - 0.75) < 2e-3)
+        let black = lut.apply(SIMD3(0, 0, 0))
+        #expect(abs(black.x - 1) < 1e-3)
+    }
+
+    @Test func rejectsWhatItCannotRead() {
+        #expect(throws: LUT3D.CubeError.notA3DLUT) { try LUT3D(cube: "0 0 0\n1 1 1") }
+        #expect(throws: LUT3D.CubeError.has1DLUT) { try LUT3D(cube: "LUT_1D_SIZE 2\n0 0 0\n1 1 1") }
+        #expect(throws: LUT3D.CubeError.wrongRowCount(expected: 8, actual: 1)) {
+            try LUT3D(cube: "LUT_3D_SIZE 2\n0 0 0")
+        }
+        #expect(throws: LUT3D.CubeError.badRow(2)) { try LUT3D(cube: "LUT_3D_SIZE 2\n0 x 0") }
+    }
+
+    @Test func neutralRecipeKeepsTheBaseLUT() throws {
+        let base = try LUT3D(cube: invertCube, size: 17)
+        let combined = FilmRecipe.neutral.makeLUT(size: 17, base: base)
+        let worst = zip(base.floatTexels, combined.floatTexels).map { abs($0 - $1) }.max() ?? 1
+        #expect(worst <= 1 / 2048)
+        var warm = FilmRecipe.neutral
+        warm.calidez = 1
+        #expect(warm.makeLUT(size: 17, base: base) != combined)
+    }
+
+    @Test func importedCubeIsARecipeOnTopOfTheLUT() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("LooksTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = UserLookStore(url: folder.appendingPathComponent("user-looks.json"))
+        let look = try store.importCube(invertCube, name: " Invertir ")
+        #expect(look.name == "Invertir" && look.recipe == .neutral && look.lut == look.id + ".lut")
+        #expect(FileManager.default.fileExists(atPath: store.lutDirectory.appendingPathComponent(look.lut!).path))
+
+        let lut = try LookCatalog.lut(for: look, cacheDirectory: nil, userLUTDirectory: store.lutDirectory)
+        let out = lut.apply(SIMD3(0, 0, 0))
+        #expect(abs(out.x - 1) < 2e-3)  // el negro sale blanco: se aplicó el .cube
+
+        store.removeLUTFile(of: look, remaining: [])
+        #expect(!FileManager.default.fileExists(atPath: store.lutDirectory.appendingPathComponent(look.lut!).path))
+    }
+}
+
+@Suite struct FramingTests {
+    private func close(_ a: CGRect, _ b: CGRect) -> Bool {
+        abs(a.minX - b.minX) < 1e-9 && abs(a.minY - b.minY) < 1e-9 && abs(a.width - b.width) < 1e-9
+            && abs(a.height - b.height) < 1e-9
+    }
+
+    @Test func fullFrameIsTheWholeImage() {
+        let r = Framing().rect(in: CGSize(width: 3, height: 4), lensFocalLength: 24)
+        #expect(close(r, CGRect(x: 0, y: 0, width: 1, height: 1)))
+        #expect(Framing().isFullFrame && !Framing(focalLength: 50).isFullFrame)
+    }
+
+    @Test func doubleFocalLengthKeepsHalfTheSides() {
+        let r = Framing(focalLength: 48).rect(in: CGSize(width: 3, height: 4), lensFocalLength: 24)
+        #expect(close(r, CGRect(x: 0.25, y: 0.25, width: 0.5, height: 0.5)))
+        // Una focal más corta que el lente no agranda nada.
+        let wide = Framing(focalLength: 18).rect(in: CGSize(width: 3, height: 4), lensFocalLength: 24)
+        #expect(close(wide, CGRect(x: 0, y: 0, width: 1, height: 1)))
+    }
+
+    @Test func aspectFollowsTheImageOrientation() {
+        // En una foto vertical 3:4, el 3:2 queda 2:3 (más alto que 3:4): se recortan los costados.
+        let portrait = Framing(aspect: .threeTwo).rect(in: CGSize(width: 3000, height: 4000), lensFocalLength: 24)
+        #expect(abs(portrait.height - 1) < 1e-9)
+        #expect(abs(portrait.width * 3000 / (portrait.height * 4000) - 2.0 / 3.0) < 1e-9)
+        let square = Framing(aspect: .square).rect(in: CGSize(width: 4000, height: 3000), lensFocalLength: 24)
+        #expect(abs(square.width * 4000 - square.height * 3000) < 1e-6 && abs(square.height - 1) < 1e-9)
+    }
+
+    @Test func storedRectFollowsEXIFOrientation() {
+        let r = CGRect(x: 0.1, y: 0.2, width: 0.3, height: 0.4)
+        #expect(close(Framing.storedRect(r, orientation: 1), r))
+        #expect(close(Framing.storedRect(r, orientation: 3), CGRect(x: 0.6, y: 0.4, width: 0.3, height: 0.4)))
+        #expect(close(Framing.storedRect(r, orientation: 6), CGRect(x: 0.2, y: 0.6, width: 0.4, height: 0.3)))
+        #expect(close(Framing.storedRect(r, orientation: 8), CGRect(x: 0.4, y: 0.1, width: 0.4, height: 0.3)))
     }
 }
 
@@ -359,7 +466,8 @@ private let hasMetal = MTLCreateSystemDefaultDevice() != nil
     }
 
     @Test func zeroIntensityIgnoresLUT() throws {
-        let bw = try LookCatalog.lut(for: #require(try LookCatalog.bundled().first { $0.id == "bn-neutro" }))
+        let bw = try LookCatalog.lut(for: #require(try LookCatalog.bundled().first { $0.id == "plata-400" }),
+                                     cacheDirectory: nil)
         let output = try render(renderer, lut: bw, parameters: LookParameters(intensity: 0))
         #expect(maxChannelDifference(testPattern(), output) == 0)
     }
@@ -376,7 +484,7 @@ private let hasMetal = MTLCreateSystemDefaultDevice() != nil
         #expect(output[0] == input[2] && output[1] == input[1] && output[2] == input[0])
     }
 
-    @Test(arguments: ["bn-neutro", "plata-400"])
+    @Test(arguments: ["plata-400", "bn-alto-contraste"])
     func blackAndWhiteLookIsNeutral(id: String) throws {
         let bw = try LookCatalog.lut(for: #require(try LookCatalog.bundled().first { $0.id == id }), cacheDirectory: nil)
         let output = try render(renderer, lut: bw, parameters: LookParameters())
@@ -387,7 +495,8 @@ private let hasMetal = MTLCreateSystemDefaultDevice() != nil
     }
 
     @Test func gpuMatchesCPUReference() throws {
-        let warm = try LookCatalog.lut(for: #require(try LookCatalog.bundled().first { $0.id == "calido" }))
+        let warm = try LookCatalog.lut(for: #require(try LookCatalog.bundled().first { $0.id == "dorado-200" }),
+                                       cacheDirectory: nil)
         let input = testPattern()
         let output = try render(renderer, lut: warm, parameters: LookParameters(intensity: 0.75))
         let table = warm.floatTexels
@@ -563,6 +672,31 @@ private let hasMetal = MTLCreateSystemDefaultDevice() != nil
         let bytes = try renderer.readBytes(texture)
         #expect(abs(Int(bytes[0]) - 200) <= 3)
         #expect(throws: LookRendererError.self) { try renderer.makePreviewTexture(photo: Data("no es una foto".utf8)) }
+    }
+
+    @Test func renderPhotoCropsToTheFrame() throws {
+        // JPEG vertical (orientación 6, guardado apaisado 64×48) recortado a 2× la focal: 32×24.
+        let pixels = [UInt8](repeating: 120, count: 64 * 48 * 4)
+        let provider = try #require(CGDataProvider(data: Data(pixels) as CFData))
+        let image = try #require(CGImage(
+            width: 64, height: 48, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: 64 * 4,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue), provider: provider,
+            decode: nil, shouldInterpolate: false, intent: .defaultIntent))
+        let data = NSMutableData()
+        let destination = try #require(CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, [kCGImagePropertyOrientation: 6] as CFDictionary)
+        #expect(CGImageDestinationFinalize(destination))
+
+        let output = try renderer.renderPhoto(data as Data, lut: nil, parameters: LookParameters(),
+                                              framing: Framing(focalLength: 48), lensFocalLength: 24,
+                                              outputType: .jpeg)
+        let source = try #require(CGImageSourceCreateWithData(output as CFData, nil))
+        let result = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        #expect(result.width == 32 && result.height == 24)
+        let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        #expect((properties?[kCGImagePropertyOrientation] as? NSNumber)?.intValue == 6)
+        #expect(CGImageSourceGetType(source) as String? == "public.jpeg")
     }
 
     @Test func rendersFullCGImage() throws {

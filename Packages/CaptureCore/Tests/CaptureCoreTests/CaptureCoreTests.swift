@@ -50,3 +50,29 @@ private let limits = ExposureLimits(isoRange: 32...3200, shutterRange: (1.0 / 16
         #expect(clamped == SIMD3(1, 2, 4))
     }
 }
+
+#if os(iOS)
+@Suite struct FocalLengthTests {
+    @Test func mainCameraIsAbout24mm() {
+        // Lente principal de los iPhone Pro: ~71,6° de campo horizontal ≈ 24 mm.
+        let focal = CameraCapabilities.equivalentFocalLength(horizontalFieldOfView: 71.6)
+        #expect(abs(focal - 24) < 0.3)
+        #expect(CameraCapabilities.equivalentFocalLength(horizontalFieldOfView: 40) > 40)
+    }
+}
+#endif
+
+@Suite struct PhotoFormatTests {
+    @Test func defaultIsRAWPlusJPEG() {
+        #expect(CaptureSettings().photoFormat == .rawJPEG)
+        #expect(PhotoFormat.rawJPEG.processed == .jpeg && PhotoFormat.rawJPEG.includesRAW)
+        #expect(PhotoFormat.raw.processed == nil)
+    }
+
+    @Test func withoutRAWKeepsTheProcessedFormat() {
+        #expect(PhotoFormat.rawJPEG.withoutRAW == .jpeg)
+        #expect(PhotoFormat.rawHEIC.withoutRAW == .heic)
+        #expect(PhotoFormat.raw.withoutRAW == .jpeg)
+        #expect(PhotoFormat.allCases.allSatisfy { !$0.withoutRAW.includesRAW })
+    }
+}

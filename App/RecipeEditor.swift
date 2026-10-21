@@ -29,6 +29,12 @@ struct RecipeEditor: View {
             Spacer()
             Text(draft.wrappedValue.editingID == nil ? "Nueva receta" : "Editar receta")
                 .font(.headline)
+            Button {
+                model.compareSplit = model.compareSplit == nil ? 0.5 : nil
+            } label: {
+                Image(systemName: model.compareSplit == nil ? "square.split.2x1" : "square.split.2x1.fill")
+            }
+            .accessibilityLabel(model.compareSplit == nil ? "Comparar antes y después" : "Dejar de comparar")
             Spacer()
             if draft.wrappedValue.editingID == nil {
                 Button("Guardar") { model.saveDraft() }
@@ -85,7 +91,15 @@ struct RecipeEditor: View {
                     ShareLink("Compartir receta", item: text,
                               preview: SharePreview(draft.wrappedValue.name.isEmpty ? "Receta" : draft.wrappedValue.name))
                 }
-                if let id = draft.wrappedValue.editingID, let look = model.userLooks.first(where: { $0.id == id }) {
+                if let id = draft.wrappedValue.editingID, let look = model.looks.first(where: { $0.id == id }),
+                   model.isModified(look) {
+                    Button("Restaurar original") {
+                        model.cancelEditing()
+                        model.restoreOriginal(look)
+                    }
+                }
+                if let id = draft.wrappedValue.editingID, let look = model.looks.first(where: { $0.id == id }),
+                   model.isUserLook(look) {
                     Button("Borrar receta", role: .destructive) { confirmsDelete = true }
                         .confirmationDialog("¿Borrar \(look.name)?", isPresented: $confirmsDelete, titleVisibility: .visible) {
                             Button("Borrar", role: .destructive) {

@@ -6,7 +6,7 @@ public enum CameraError: Error, Equatable {
     case accessDenied
     case noCamera
     case configurationFailed(String)
-    case proRAWUnsupported
+    case rawUnsupported
     case captureFailed(String)
     case photoLibraryDenied
 }
@@ -14,10 +14,20 @@ public enum CameraError: Error, Equatable {
 /// Lo que la cámara soporta, para que la UI muestre solo opciones válidas.
 public struct CameraCapabilities: Sendable, Hashable {
     public var isProRAWSupported: Bool
+    /// ProRAW o, si no, el RAW del sensor (Bayer).
+    public var isRAWSupported: Bool
     public var limits: ExposureLimits
+    /// Focal equivalente en 35 mm del lente (por diagonal), para los recortes por focal.
+    public var equivalentFocalLength: Double
+
+    /// Focal equivalente (diagonal de 43,27 mm) de un sensor 4:3 con este campo de visión
+    /// horizontal en grados: el ancho de un 4:3 con esa diagonal mide 34,6 mm.
+    public static func equivalentFocalLength(horizontalFieldOfView degrees: Double) -> Double {
+        17.3 / tan(degrees * .pi / 360)
+    }
 }
 
-/// Resultado de una toma: HEIC procesado y, si se pidió ProRAW, el DNG.
+/// Resultado de una toma: la imagen procesada (JPG o HEIC) y, si se pidió RAW, el DNG.
 public struct CapturedPhoto: Sendable {
     public var processed: Data?
     public var raw: Data?
@@ -97,7 +107,12 @@ public final class CameraController: NSObject, @unchecked Sendable {
             }
 
             self.device = device
-            return CameraCapabilities(isProRAWSupported: photoOutput.isAppleProRAWEnabled, limits: Self.limits(of: device))
+            return CameraCapabilities(
+                isProRAWSupported: photoOutput.isAppleProRAWEnabled,
+                isRAWSupported: !photoOutput.availableRawPhotoPixelFormatTypes.isEmpty,
+                limits: Self.limits(of: device),
+                equivalentFocalLength: CameraCapabilities.equivalentFocalLength(
+                    horizontalFieldOfView: Double(device.activeFormat.videoFieldOfView)))
         }
     }
 
@@ -189,20 +204,26 @@ public final class CameraController: NSObject, @unchecked Sendable {
     }
 
     private func makePhotoSettings(for format: PhotoFormat) throws -> AVCapturePhotoSettings {
-        let hevc: [String: Any]? = photoOutput.availablePhotoCodecTypes.contains(.hevc)
-            ? [AVVideoCodecKey: AVVideoCodecType.hevc] : nil
-        let settings: AVCapturePhotoSettings
-        switch format {
-        case .heic:
-            settings = hevc.map { AVCapturePhotoSettings(format: $0) } ?? AVCapturePhotoSettings()
-        case .proRAW:
-            guard photoOutput.isAppleProRAWEnabled,
-                  let rawType = photoOutput.availableRawPhotoPixelFormatTypes
-                    .first(where: AVCapturePhotoOutput.isAppleProRAWPixelFormat)
-            else { throw CameraError.proRAWUnsupported }
-            settings = AVCapturePhotoSettings(rawPixelFormatType: rawType, processedFormat: hevc)
+        let codec: AVVideoCodecType? = switch format.processed {
+        case .heic: photoOutput.availablePhotoCodecTypes.contains(.hevc) ? .hevc : .jpeg
+        case .jpeg: .jpeg
+        case nil: nil
         }
-        settings.photoQualityPrioritization = .quality
+        let processed: [String: Any]? = codec.map { [AVVideoCodecKey: $0] }
+        guard format.includesRAW else {
+            let settings = processed.map { AVCapturePhotoSettings(format: $0) } ?? AVCapturePhotoSettings()
+            settings.photoQualityPrioritization = .quality
+            return settings
+        }
+        // ProRAW si está; si no, el RAW del sensor (Bayer).
+        let rawTypes = photoOutput.availableRawPhotoPixelFormatTypes
+        let proRAW = photoOutput.isAppleProRAWEnabled ? rawTypes.first(where: AVCapturePhotoOutput.isAppleProRAWPixelFormat) : nil
+        guard let rawType = proRAW ?? rawTypes.first(where: AVCapturePhotoOutput.isBayerRAWPixelFormat) else {
+            throw CameraError.rawUnsupported
+        }
+        let settings = AVCapturePhotoSettings(rawPixelFormatType: rawType, processedFormat: processed)
+        // El RAW Bayer no admite el procesado de máxima calidad.
+        settings.photoQualityPrioritization = proRAW == nil ? .speed : .quality
         return settings
     }
 }

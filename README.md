@@ -124,33 +124,41 @@ Qué se prueba:
 - Los shaders se compilan en runtime desde Swift (`LookShaders.swift`) para que el paquete
   funcione igual con `swift test` en macOS que en iOS.
 
-### LUTs
+### Looks (todo es receta)
 
 `Packages/Looks/Sources/Looks/Resources/LUTs/looks.json` es el catálogo (id, nombre, grano
-sugerido y de dónde sale el LUT). La app muestra los Looks en ese orden. Cada Look tiene una de dos
-cosas:
+sugerido, receta y efectos), en el orden en que lo muestra la app. Son 13, pocos y bien distintos:
 
-- `"recipe": {…}`: **receta de película**, los parámetros de `film_look()` (calidez, tinte, brillo,
-  altas_luces, contraste, negros, blancos, verdes_oliva, verdes_apagados, azules_apagados,
-  rojos_amarillos, saturacion, sombras_frias, luces_amarillas, mono; tinte, brillo y mono son
-  opcionales; también lo son el **filtro de color para B/N**, `filtro` 0…1 y `filtro_tono` en
-  grados, y el **virado partido**, `virado_sombras`/`virado_luces` 0…2 con su `_tono` en grados). La app genera el LUT 64³ en el dispositivo (`FilmRecipe.swift`, port 1:1 del script
-  en `Double`, en paralelo por planos) la primera vez que se elige el Look, y lo cachea en memoria y
-  en `Library/Caches/Looks/` con clave id + hash de la receta + versión del generador. Unos 25 ms
-  en un Mac en release. Son: **Dorado 200**, **Retrato 400**, **Ámbar 800**, **Negativo Diario**,
-  **Diapositiva**, **Plata 400** y **Cine Verde**, más 23 estilos clásicos de laboratorio y de cámara
-  diseñados desde su referencia fotográfica (película, papel o proceso): Estándar, Clásico,
-  Contemporáneo, Vívido, Puro, Latón, Azul, Verde Azulado, Cine, Cine Suave, Blanqueo, Documental,
-  Retrato Cálido, B/N Alto Contraste, Plata Suave, Selenio, Sepia, Centenario y B/N con filtro
-  amarillo, naranja, rojo, verde y azul.
-- `"lut": "archivo.lut"`: LUT precalculado en el bundle. Los de fórmula fija de
-  `scripts/make_luts.py` (**Natural** = identidad, **B/N Neutro** = luminancia Rec.709 + curva S
-  suave, **Cálido** = balance cálido en luz lineal, sombras levantadas, +8 % saturación) y los
-  `.cube` importados.
+- **Color:** Natural (la receta neutra), Dorado 200, Retrato 400, Clásico, Documental,
+  Contemporáneo, Puro, Cine y Verde Azulado.
+- **Estilizado:** Blanqueo.
+- **B/N:** Plata 400, B/N Alto Contraste y Sepia. Los filtros de color para B/N son un slider de
+  cualquier receta B/N.
 
-Un Look con receta puede llevar además `"effects": {"nitidez": …, "claridad": …, "vineteo": …}`
-(−1…1, los que faltan valen 0): lo de una receta Ricoh que no entra en un LUT. Ámbar 800,
-Diapositiva, Plata 400 y Cine Verde los usan (ver `EFFECTS` en `make_luts.py`).
+Los que se parecían a otros quedaron en `ARCHIVO` de `make_luts.py` (fuera de la app, por si alguno
+vuelve).
+
+Cada Look es una **receta**: `"recipe": {…}`, los parámetros de `film_look()` (calidez, tinte,
+brillo, altas_luces, contraste, negros, blancos, verdes_oliva, verdes_apagados, azules_apagados,
+rojos_amarillos, saturacion, sombras_frias, luces_amarillas, mono; tinte, brillo y mono son
+opcionales; también lo son el **filtro de color para B/N**, `filtro` 0…1 y `filtro_tono` en grados,
+y el **virado partido**, `virado_sombras`/`virado_luces` 0…2 con su `_tono` en grados). La app
+genera el LUT 64³ en el dispositivo (`FilmRecipe.swift`, port 1:1 del script en `Double`, en
+paralelo por planos) la primera vez que se elige el Look, y lo cachea en memoria y en
+`Library/Caches/Looks/` con clave id + LUT base + hash de la receta + versión del generador.
+
+Un Look puede tener además un **LUT base** (`"lut": "archivo.lut"`): la receta se aplica sobre su
+salida (con la receta neutra queda igual). Así entran los `.cube` que importa el usuario.
+
+Y `"effects": {"nitidez": …, "claridad": …, "vineteo": …, "halation": …, "bloom": …}` (los que faltan
+valen 0): lo que no entra en un LUT (ver `EFFECTS` en `make_luts.py`).
+
+En la app (varita o mantener apretado un Look):
+- **Editar** cualquier Look, incluidos los de la app: el cambio lo reemplaza y queda
+  **Restaurar original**. **Duplicar y editar** crea otro.
+- **Importar LUT (.cube)…**: el `.cube` (3D, cualquier tamaño, con o sin `DOMAIN_MIN/MAX`, para
+  entrada sRGB) se remuestrea a 64³ y queda como base de una receta nueva: se retoca con los mismos
+  sliders, grano y efectos. Los LUT con shaper 1D o entrada log todavía no se soportan.
 
 La app carga cada LUT recién cuando se elige el Look, fuera del main actor; hasta que está listo el
 preview sigue con el anterior, y la foto se hornea con el LUT si ya está cargado.
@@ -203,6 +211,19 @@ Solo usar LUTs propios o con licencia que permita distribuirlos dentro de la app
 
 Formato `.lut`: cabecera de 16 bytes (`LAIKALUT`, versión u32 = 1, tamaño u32 = 64) + 64³ texeles
 RGBA float16 little-endian, R variando más rápido (mismo layout que la textura Metal 3D).
+
+### Formato y encuadre
+
+- **Formato** (menú de la barra superior): RAW + JPG por defecto; también RAW + HEIC, JPG, HEIC o
+  solo RAW. El RAW es Apple ProRAW en los iPhone Pro y el RAW del sensor (Bayer, sin el procesado de
+  Apple) en los demás; en un iPhone sin RAW se usa el mismo formato sin RAW. Con RAW + JPG se guardan
+  dos fotos separadas en Fotos: el JPG con el Look y el DNG intacto.
+- **Encuadre** (como el modo crop de las compactas): una focal más larga que la del lente (28, 35,
+  50, 75 mm, recortando al centro) y un formato (4:3, 3:2, 1:1, 16:9, que sigue la orientación de la
+  foto). El visor muestra el cuadro entero con el marco del recorte y lo de afuera oscurecido; la
+  foto procesada se guarda recortada (el viñeteo y el grano se miden sobre el recorte) y el RAW
+  entero, para poder reencuadrar. La focal del lente sale de su campo de visión
+  (`CameraCapabilities.equivalentFocalLength`) o, en una foto de la fototeca, de su EXIF.
 
 ### Recetas propias (editor)
 

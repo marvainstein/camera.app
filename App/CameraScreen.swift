@@ -3,11 +3,13 @@ import Looks
 import PhotosUI
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 struct CameraScreen: View {
     @State private var model = CameraModel()
     @State private var showsManual = false
     @State private var photoItem: PhotosPickerItem?
+    @State private var importsCube = false
 
     var body: some View {
         ZStack {
@@ -32,7 +34,7 @@ struct CameraScreen: View {
                     statusBanner
                     lookPicker
                     lookSliders
-                    shutterButton
+                    shutterRow
                 }
             }
             .padding(.horizontal, 16)
@@ -46,6 +48,12 @@ struct CameraScreen: View {
                     await model.usePhoto(data)
                 }
                 photoItem = nil
+            }
+        }
+        .fileImporter(isPresented: $importsCube,
+                      allowedContentTypes: [UTType(filenameExtension: "cube") ?? .data, .plainText, .data]) { result in
+            if case .success(let url) = result {
+                Task { await model.importCube(at: url) }
             }
         }
         .sheet(isPresented: $showsManual) {
@@ -95,13 +103,13 @@ struct CameraScreen: View {
     }
 
     private var topBar: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             Picker("Modo", selection: isAperturePriority) {
                 Text("P").tag(false)
                 Text("A").tag(true)
             }
             .pickerStyle(.segmented)
-            .frame(width: 96)
+            .frame(width: 84)
 
             if case .aperturePriority(let fNumber) = model.settings.program {
                 Menu {
@@ -116,34 +124,9 @@ struct CameraScreen: View {
 
             Spacer()
 
-            Picker("Formato", selection: $model.settings.photoFormat) {
-                Text("HEIC").tag(PhotoFormat.heic)
-                Text("RAW").tag(PhotoFormat.proRAW)
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 120)
-            .disabled(model.capabilities?.isProRAWSupported != true)
+            formatMenu
 
-            Button {
-                model.compareSplit = model.compareSplit == nil ? 0.5 : nil
-            } label: {
-                Image(systemName: model.compareSplit == nil ? "square.split.2x1" : "square.split.2x1.fill")
-            }
-            .accessibilityLabel(model.compareSplit == nil ? "Comparar antes y después" : "Dejar de comparar")
-
-            if model.photo != nil {
-                Button {
-                    model.closePhoto()
-                } label: {
-                    Image(systemName: "camera")
-                }
-                .accessibilityLabel("Volver a la cámara")
-            } else {
-                PhotosPicker(selection: $photoItem, matching: .images) {
-                    Image(systemName: "photo.on.rectangle")
-                }
-                .accessibilityLabel("Probar con una foto")
-            }
+            framingMenu
 
             Button {
                 showsManual = true
@@ -151,6 +134,78 @@ struct CameraScreen: View {
                 Image(systemName: "slider.horizontal.3")
             }
             .accessibilityLabel("Controles manuales")
+        }
+    }
+
+    /// Qué guarda cada toma: RAW + JPG por defecto.
+    private var formatMenu: some View {
+        let rawAvailable = model.capabilities?.isRAWSupported ?? false
+        return Menu {
+            ForEach(PhotoFormat.allCases) { format in
+                Button {
+                    model.settings.photoFormat = format
+                } label: {
+                    checkmarkLabel(format.rawValue, selected: model.settings.photoFormat == format)
+                }
+                .disabled(format.includesRAW && !rawAvailable)
+            }
+            if model.capabilities?.isProRAWSupported == false && rawAvailable {
+                Text("En este iPhone el RAW es el del sensor, sin el procesado de Apple (ProRAW).")
+            }
+        } label: {
+            Text(model.settings.photoFormat.rawValue)
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(Color.white.opacity(0.15), in: Capsule())
+        }
+        .accessibilityLabel("Formato: \(model.settings.photoFormat.rawValue)")
+    }
+
+    /// Recorte por focal y formato, como el modo crop de las compactas.
+    private var framingMenu: some View {
+        let lens = model.lensFocalLength
+        let focal = model.framing.focalLength.map { Int($0.rounded()) } ?? Int(lens.rounded())
+        return Menu {
+            Section("Focal") {
+                Button {
+                    model.framing.focalLength = nil
+                } label: {
+                    checkmarkLabel("Lente (\(Int(lens.rounded())) mm)", selected: model.framing.focalLength == nil)
+                }
+                ForEach(Framing.focalLengths, id: \.self) { length in
+                    Button {
+                        model.framing.focalLength = length
+                    } label: {
+                        checkmarkLabel("\(Int(length)) mm", selected: model.framing.focalLength == length)
+                    }
+                    .disabled(length <= lens + 0.5)
+                }
+            }
+            Section("Formato") {
+                ForEach(Framing.Aspect.allCases) { aspect in
+                    Button {
+                        model.framing.aspect = aspect
+                    } label: {
+                        checkmarkLabel(aspect.rawValue, selected: model.framing.aspect == aspect)
+                    }
+                }
+            }
+        } label: {
+            Text("\(focal) · \(model.framing.aspect.rawValue)")
+                .font(.caption.monospacedDigit().weight(.semibold))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(Color.white.opacity(model.framing.isFullFrame ? 0.15 : 0.35), in: Capsule())
+        }
+        .accessibilityLabel("Encuadre: \(focal) milímetros, formato \(model.framing.aspect.rawValue)")
+    }
+
+    @ViewBuilder private func checkmarkLabel(_ title: String, selected: Bool) -> some View {
+        if selected {
+            Label(title, systemImage: "checkmark")
+        } else {
+            Text(title)
         }
     }
 
@@ -187,8 +242,8 @@ struct CameraScreen: View {
                         Button {
                             model.select(look)
                         } label: {
-                            Label(look.name, systemImage: "person.fill")
-                                .labelStyle(UserLookLabelStyle(isUserLook: model.isUserLook(look)))
+                            Label(look.name, systemImage: model.isModified(look) ? "pencil" : "person.fill")
+                                .labelStyle(UserLookLabelStyle(isUserLook: model.isUserLook(look) || model.isModified(look)))
                         }
                         .font(.callout)
                         .padding(.horizontal, 14)
@@ -213,6 +268,7 @@ struct CameraScreen: View {
             Button("Pegar receta", systemImage: "doc.on.clipboard") {
                 model.importRecipe(from: UIPasteboard.general.string ?? "")
             }
+            Button("Importar LUT (.cube)…", systemImage: "square.and.arrow.down") { importsCube = true }
         } label: {
             Image(systemName: "wand.and.stars")
                 .padding(8)
@@ -222,15 +278,19 @@ struct CameraScreen: View {
     }
 
     @ViewBuilder private func lookActions(_ look: Look) -> some View {
-        if look.recipe != nil {
-            Button(model.isUserLook(look) ? "Editar \(look.name)" : "Copiar y editar \(look.name)",
-                   systemImage: "slider.horizontal.3") {
-                model.select(look)
-                model.edit(look)
-            }
-            if let text = model.shareText(for: look) {
-                ShareLink("Compartir receta", item: text, preview: SharePreview(look.name))
-            }
+        Button("Editar \(look.name)", systemImage: "slider.horizontal.3") {
+            model.select(look)
+            model.edit(look)
+        }
+        Button("Duplicar y editar", systemImage: "plus.square.on.square") {
+            model.select(look)
+            model.duplicate(look)
+        }
+        if let text = model.shareText(for: look) {
+            ShareLink("Compartir receta", item: text, preview: SharePreview(look.name))
+        }
+        if model.isModified(look) {
+            Button("Restaurar original", systemImage: "arrow.uturn.backward") { model.restoreOriginal(look) }
         }
         if model.isUserLook(look) {
             Button("Borrar \(look.name)", systemImage: "trash", role: .destructive) { model.delete(look) }
@@ -244,6 +304,45 @@ struct CameraScreen: View {
         }
         .padding(12)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    /// Fototeca a la izquierda del disparador, comparar a la derecha (como la app de Cámara).
+    private var shutterRow: some View {
+        HStack {
+            Group {
+                if model.photo != nil {
+                    Button {
+                        model.closePhoto()
+                    } label: {
+                        Image(systemName: "camera")
+                    }
+                    .accessibilityLabel("Volver a la cámara")
+                } else {
+                    PhotosPicker(selection: $photoItem, matching: .images) {
+                        Image(systemName: "photo.on.rectangle")
+                    }
+                    .accessibilityLabel("Probar con una foto")
+                }
+            }
+            .font(.title2)
+            .frame(width: 56, height: 56)
+            .background(Color.white.opacity(0.15), in: Circle())
+
+            Spacer()
+            shutterButton
+            Spacer()
+
+            Button {
+                model.compareSplit = model.compareSplit == nil ? 0.5 : nil
+            } label: {
+                Image(systemName: model.compareSplit == nil ? "square.split.2x1" : "square.split.2x1.fill")
+                    .font(.title2)
+                    .frame(width: 56, height: 56)
+                    .background(Color.white.opacity(model.compareSplit == nil ? 0.15 : 0.35), in: Circle())
+            }
+            .accessibilityLabel(model.compareSplit == nil ? "Comparar antes y después" : "Dejar de comparar")
+        }
+        .foregroundStyle(.white)
     }
 
     private var shutterButton: some View {
