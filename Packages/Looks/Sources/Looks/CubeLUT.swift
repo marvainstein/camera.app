@@ -45,15 +45,20 @@ extension LUT3D {
         let span = domainMax - domainMin
         let maxIndex = Float(n - 2)
         self.init(size: size) { rgb in
-            var p = (rgb - domainMin) / span
-            p = p.clamped(lowerBound: .zero, upperBound: .one) * Float(n - 1)
+            let normalized: SIMD3<Float> = (rgb - domainMin) / span
+            let p: SIMD3<Float> = normalized.clamped(lowerBound: .zero, upperBound: .one) * Float(n - 1)
             let r0 = Int(min(p.x, maxIndex)), g0 = Int(min(p.y, maxIndex)), b0 = Int(min(p.z, maxIndex))
-            let t = p - SIMD3(Float(r0), Float(g0), Float(b0))
+            let t: SIMD3<Float> = p - SIMD3<Float>(Float(r0), Float(g0), Float(b0))
             var out = SIMD3<Float>.zero
             for corner in 0..<8 {
-                let dr = corner & 1, dg = (corner >> 1) & 1, db = (corner >> 2) & 1
-                let w = (dr == 1 ? t.x : 1 - t.x) * (dg == 1 ? t.y : 1 - t.y) * (db == 1 ? t.z : 1 - t.z)
-                out += w * data[(r0 + dr) + (g0 + dg) * n + (b0 + db) * n * n]
+                let dr: Int = corner & 1
+                let dg: Int = (corner >> 1) & 1
+                let db: Int = (corner >> 2) & 1
+                let wr: Float = dr == 1 ? t.x : 1 - t.x
+                let wg: Float = dg == 1 ? t.y : 1 - t.y
+                let wb: Float = db == 1 ? t.z : 1 - t.z
+                let index: Int = (r0 + dr) + (g0 + dg) * n + (b0 + db) * n * n
+                out += (wr * wg * wb) * data[index]
             }
             return out.clamped(lowerBound: .zero, upperBound: .one)
         }
