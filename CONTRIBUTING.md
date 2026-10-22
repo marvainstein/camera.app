@@ -3,6 +3,10 @@
 Guía corta para sumarse al proyecto. El detalle técnico está en el [README](README.md) y la
 arquitectura en [docs/04-arquitectura-alternativa.md](docs/04-arquitectura-alternativa.md).
 
+Somos Martín ([@marvainstein](https://github.com/marvainstein), dueño del repo y de la cuenta de
+Apple Developer) y Ernesto ([@ernestodelisi](https://github.com/ernestodelisi)). Lo pendiente está en
+los [issues](https://github.com/marvainstein/camera.app/issues); cada uno se asigna el que toma.
+
 ## Ramas y PRs
 
 Todo lo de la app está en `main`. Para un cambio nuevo: rama propia desde `main`, commits chicos y
