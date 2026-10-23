@@ -124,6 +124,7 @@ enum LookShaders {
                                   texture3d<float> lut [[texture(1)]],
                                   texture2d<float> blurred [[texture(2)]],
                                   texture2d<float> glow [[texture(3)]],
+                                  texture2d<float> original [[texture(4)]],
                                   sampler sourceSampler [[sampler(0)]],
                                   sampler lutSampler [[sampler(1)]],
                                   constant LookUniforms &u [[buffer(0)]]) {
@@ -136,13 +137,15 @@ enum LookShaders {
         }
         float3 rgb = saturate(source.sample(sourceSampler, in.uv).rgb);
 
-        // Comparar antes/después: a la izquierda de la línea, la fuente sin tocar.
+        // Comparar antes/después: a la izquierda de la línea, la imagen original sin tocar (sin Look
+        // ni bokeh).
         if (u.split > 0.0) {
             if (abs(in.frame.x - u.split) < u.splitWidth) {
                 return float4(0.92, 0.91, 0.88, 1.0);
             }
             if (in.frame.x < u.split) {
-                return float4(applyFrame(rgb, in.uv, frameLine, u), 1.0);
+                float3 before = saturate(original.sample(sourceSampler, in.uv).rgb);
+                return float4(applyFrame(before, in.uv, frameLine, u), 1.0);
             }
         }
 
