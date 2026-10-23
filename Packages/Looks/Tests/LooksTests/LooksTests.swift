@@ -695,7 +695,8 @@ private let hasMetal = MTLCreateSystemDefaultDevice() != nil
     }
 
     @Test func renderPhotoCropsToTheFrame() throws {
-        // JPEG vertical (orientación 6, guardado apaisado 64×48) recortado a 2× la focal: 32×24.
+        // JPEG vertical (orientación 6, guardado apaisado 64×48) recortado a 2× la focal: sale derecho,
+        // 24×32.
         let pixels = [UInt8](repeating: 120, count: 64 * 48 * 4)
         let provider = try #require(CGDataProvider(data: Data(pixels) as CFData))
         let image = try #require(CGImage(
@@ -713,10 +714,68 @@ private let hasMetal = MTLCreateSystemDefaultDevice() != nil
                                               outputType: .jpeg)
         let source = try #require(CGImageSourceCreateWithData(output as CFData, nil))
         let result = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
-        #expect(result.width == 32 && result.height == 24)
+        #expect(result.width == 24 && result.height == 32)
         let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
-        #expect((properties?[kCGImagePropertyOrientation] as? NSNumber)?.intValue == 6)
+        #expect((properties?[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1 == 1)
         #expect(CGImageSourceGetType(source) as String? == "public.jpeg")
+    }
+
+    @Test func renderPhotoComesOutUpright() throws {
+        // Guardada apaisada (8×4) con orientación 6 (girar 90° a la derecha para verla). La mitad
+        // izquierda guardada es roja: en la foto derecha, es la mitad de arriba.
+        var pixels = [UInt8](repeating: 255, count: 8 * 4 * 4)
+        for y in 0..<4 {
+            for x in 0..<8 {
+                let i = (y * 8 + x) * 4
+                pixels[i] = 255
+                pixels[i + 1] = x < 4 ? 0 : 255
+                pixels[i + 2] = x < 4 ? 0 : 255
+            }
+        }
+        let provider = try #require(CGDataProvider(data: Data(pixels) as CFData))
+        let image = try #require(CGImage(
+            width: 8, height: 4, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: 8 * 4,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue), provider: provider,
+            decode: nil, shouldInterpolate: false, intent: .defaultIntent))
+        let data = NSMutableData()
+        let destination = try #require(CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, [
+            kCGImagePropertyOrientation: 6,
+            kCGImagePropertyTIFFDictionary: [kCGImagePropertyTIFFOrientation: 6, kCGImagePropertyTIFFMake: "Apple"],
+        ] as CFDictionary)
+        #expect(CGImageDestinationFinalize(destination))
+
+        let output = try renderer.renderPhoto(data as Data, lut: nil, parameters: LookParameters(), outputType: .png)
+        let source = try #require(CGImageSourceCreateWithData(output as CFData, nil))
+        let result = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        #expect(result.width == 4 && result.height == 8)
+        let properties = try #require(CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any])
+        #expect((properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1 == 1)
+        let tiff = properties[kCGImagePropertyTIFFDictionary] as? [CFString: Any]
+        #expect((tiff?[kCGImagePropertyTIFFOrientation] as? NSNumber)?.intValue ?? 1 == 1)
+        #expect(tiff?[kCGImagePropertyTIFFMake] as? String == "Apple")
+        let rgba = try #require(result.dataProvider?.data as Data?)
+        let bytesPerRow = result.bytesPerRow, bytesPerPixel = result.bitsPerPixel / 8
+        // Arriba roja, abajo blanca.
+        #expect(rgba[1 * bytesPerRow + 1 * bytesPerPixel + 1] < 30)
+        #expect(rgba[6 * bytesPerRow + 1 * bytesPerPixel + 1] > 225)
+    }
+
+    @Test func uprightPropertiesDropTheOriginalProcessing() {
+        let properties = LookRenderer.uprightProperties([
+            kCGImagePropertyOrientation: 6,
+            kCGImagePropertyPixelWidth: 4032,
+            kCGImagePropertyMakerAppleDictionary: ["33": 1.0],
+            kCGImagePropertyExifDictionary: [kCGImagePropertyExifPixelXDimension: 4032,
+                                             kCGImagePropertyExifFNumber: 1.78],
+        ])
+        #expect((properties[kCGImagePropertyOrientation] as? Int) == 1)
+        #expect(properties[kCGImagePropertyPixelWidth] == nil)
+        #expect(properties[kCGImagePropertyMakerAppleDictionary] == nil)
+        let exif = properties[kCGImagePropertyExifDictionary] as? [CFString: Any]
+        #expect(exif?[kCGImagePropertyExifPixelXDimension] == nil)
+        #expect((exif?[kCGImagePropertyExifFNumber] as? Double) == 1.78)
     }
 
     @Test func rendersFullCGImage() throws {
