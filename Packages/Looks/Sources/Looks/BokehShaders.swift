@@ -12,6 +12,7 @@ enum BokehShaders {
         float roundness;      // 1 = disco redondo, 0 = polígono de las hojas
         float catEye;         // recorte del disco hacia las esquinas (ojo de gato)
         float highlightGain;  // peso extra de las luces fuertes
+        uint sampleCount;     // puntos de la espiral que llena el disco
         float4 matteX;        // coordenadas del matte (derecho) desde las de la foto guardada
         float4 matteY;
     };
@@ -66,7 +67,7 @@ enum BokehShaders {
                                  constant BokehUniforms &u [[buffer(0)]],
                                  texture2d<float> prepared [[texture(0)]],
                                  sampler s [[sampler(0)]]) {
-        const int count = 160;
+        const int count = int(u.sampleCount);
         float2 fromCenter = (in.uv - 0.5) * u.workSize / (0.5 * length(u.workSize));
         float2 eye = fromCenter * u.catEye;
         float4 sum = float4(0.0);

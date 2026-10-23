@@ -749,7 +749,8 @@ private let hasMetal = MTLCreateSystemDefaultDevice() != nil
     }
 
     @Test func workScaleCapsTheRadius() {
-        #expect(abs(66 * Bokeh.workScale(radius: 66) - Bokeh.workRadius) < 1e-4)
+        #expect(abs(66 * Bokeh.workScale(radius: 66) - BokehQuality.photo.workRadius) < 1e-4)
+        #expect(abs(66 * Bokeh.workScale(radius: 66, quality: .preview) - BokehQuality.preview.workRadius) < 1e-4)
         #expect(Bokeh.workScale(radius: 8) == 1)
     }
 
@@ -758,6 +759,21 @@ private let hasMetal = MTLCreateSystemDefaultDevice() != nil
         #expect(Bokeh(fNumber: 2.8).roundness > 0 && Bokeh(fNumber: 2.8).roundness < 1)
         #expect(Bokeh(fNumber: 4).roundness == 0)
         #expect(Bokeh(fNumber: 11).roundness == 0)
+    }
+
+    @Test func visibleOnlyWhenTheBlurShows() {
+        #expect(Bokeh(fNumber: 1.4).isVisible(shortSide: 1440))
+        #expect(!Bokeh(fNumber: 16).isVisible(shortSide: 300))
+    }
+
+    @Test func blendingSmoothsTheMatteBetweenFrames() {
+        let previous = PersonMatte(width: 2, height: 1, pixels: [0, 200])
+        let current = PersonMatte(width: 2, height: 1, pixels: [100, 0])
+        #expect(current.blended(withPrevious: previous, weight: 0.6).pixels == [60, 80])
+        #expect(current.blended(withPrevious: nil, weight: 0.6) == current)
+        // Si cambió el tamaño, no se mezcla.
+        let other = PersonMatte(width: 1, height: 2, pixels: [255, 255])
+        #expect(current.blended(withPrevious: other, weight: 0.6) == current)
     }
 
     @Test func matteCoverage() {
@@ -828,13 +844,14 @@ private let hasMetal = MTLCreateSystemDefaultDevice() != nil
         image { x, _ in x % 2 == 0 ? (0, 0, 0) : (255, 255, 255) }
     }
 
-    private func bokeh(_ pixels: [UInt8], matte: PersonMatte, fNumber: Float = 1.4,
-                       orientation: Int = 1) throws -> [UInt8] {
+    private func bokeh(_ pixels: [UInt8], matte: PersonMatte, fNumber: Float = 1.4, orientation: Int = 1,
+                       quality: BokehQuality = .photo, scratch: BokehScratch? = nil) throws -> [UInt8] {
         let source = try renderer.makeTexture(rgba8: pixels, width: width, height: height)
         let target = try renderer.makeRenderTarget(width: width, height: height)
         let commandBuffer = try #require(renderer.commandQueue.makeCommandBuffer())
         try renderer.encodeBokeh(commandBuffer: commandBuffer, source: source, matte: renderer.makeTexture(matte: matte),
-                                 destination: target, bokeh: Bokeh(fNumber: fNumber), orientation: orientation)
+                                 destination: target, bokeh: Bokeh(fNumber: fNumber), orientation: orientation,
+                                 quality: quality, scratch: scratch)
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
         return try renderer.readBytes(target)
@@ -879,6 +896,50 @@ private let hasMetal = MTLCreateSystemDefaultDevice() != nil
         #expect(channel(output, 200, 154) > 100)
         #expect(abs(channel(output, 212, 150) - 10) <= 2)
         #expect(abs(channel(output, 200, 162) - 10) <= 2)
+    }
+
+    @Test func previewMakesTheSameSizeDisc() throws {
+        // El visor usa menos puntos, pero el disco tiene que medir lo mismo que en la foto.
+        let input = image { x, y in abs(x - 200) <= 1 && abs(y - 150) <= 1 ? (255, 255, 255) : (10, 10, 10) }
+        let noPerson = PersonMatte(width: 4, height: 4, pixels: Array(repeating: 0, count: 16))
+        let output = try bokeh(input, matte: noPerson, quality: .preview)
+        #expect(channel(output, 203, 150) > 60)
+        #expect(channel(output, 200, 154) > 60)
+        #expect(abs(channel(output, 212, 150) - 10) <= 2)
+        #expect(abs(channel(output, 200, 162) - 10) <= 2)
+    }
+
+    @Test func previewKeepsThePersonSharp() throws {
+        let input = stripes
+        let output = try bokeh(input, matte: leftHalfPerson, quality: .preview)
+        for x in 0..<190 {
+            #expect(channel(output, x, 150) == channel(input, x, 150))
+        }
+        #expect(roughness(output, xs: 220..<390) < 20)
+    }
+
+    @Test func scratchTexturesAreReused() throws {
+        let scratch = BokehScratch()
+        _ = try bokeh(stripes, matte: leftHalfPerson, quality: .preview, scratch: scratch)
+        let prepared = try #require(scratch.prepared), blurred = try #require(scratch.blurred)
+        _ = try bokeh(stripes, matte: leftHalfPerson, quality: .preview, scratch: scratch)
+        #expect(scratch.prepared === prepared)
+        #expect(scratch.blurred === blurred)
+    }
+
+    @Test func compareShowsTheOriginalOnTheLeft() throws {
+        // Del lado "antes" va la imagen sin bokeh (original), no la fuente que recibe el Look.
+        let shown = try renderer.makeTexture(rgba8: image { _, _ in (255, 255, 255) }, width: width, height: height)
+        let original = try renderer.makeTexture(rgba8: image { _, _ in (0, 0, 0) }, width: width, height: height)
+        let target = try renderer.makeRenderTarget(width: width, height: height)
+        let commandBuffer = try #require(renderer.commandQueue.makeCommandBuffer())
+        try renderer.encode(commandBuffer: commandBuffer, source: shown, lut: nil, destination: target,
+                            parameters: LookParameters(split: 0.5), original: original)
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        let output = try renderer.readBytes(target)
+        #expect(channel(output, 50, 150) == 0)
+        #expect(channel(output, 350, 150) == 255)
     }
 
     @Test func matteFollowsTheEXIFOrientation() throws {

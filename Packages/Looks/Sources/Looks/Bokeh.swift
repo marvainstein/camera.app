@@ -22,8 +22,6 @@ public struct Bokeh: Codable, Sendable, Hashable {
     static let radiusAtF14: Float = 0.022
     /// Por debajo de este radio (en píxeles de la foto) el desenfoque no se nota: no se aplica.
     static let minimumRadius: Float = 1.5
-    /// Radio máximo, en píxeles de la versión reducida sobre la que se desenfoca.
-    static let workRadius: Float = 16
     /// Hojas del diafragma.
     static let blades: Float = 9
     /// Cuánto se recorta el disco hacia las esquinas (ojo de gato), 0…1.
@@ -41,17 +39,55 @@ public struct Bokeh: Codable, Sendable, Hashable {
         radiusFraction * Float(shortSide)
     }
 
+    /// Si en una imagen con ese lado corto el desenfoque se nota (si no, no vale la pena aplicarlo).
+    public func isVisible(shortSide: Int) -> Bool {
+        radius(shortSide: shortSide) >= Self.minimumRadius
+    }
+
     /// Qué tan redondos son los discos: 1 = círculo (abierto), 0 = polígono de las hojas (desde f/4).
     var roundness: Float {
         min(max((4 - fNumber) / 2.6, 0), 1)
     }
 
     /// Escala de la versión reducida sobre la que se desenfoca, para que el radio quede en
-    /// `workRadius` píxeles como máximo (el desenfoque grande a resolución completa sería lento y
-    /// no se distingue del hecho sobre una versión reducida).
-    static func workScale(radius: Float) -> Float {
-        min(1, workRadius / max(radius, 1))
+    /// `quality.workRadius` píxeles como máximo (el desenfoque grande a resolución completa sería
+    /// lento y no se distingue del hecho sobre una versión reducida).
+    static func workScale(radius: Float, quality: BokehQuality = .photo) -> Float {
+        min(1, quality.workRadius / max(radius, 1))
     }
+}
+
+/// Definición del bokeh. El visor usa el mismo algoritmo y el mismo radio que la foto, con menos
+/// detalle, para que lo que se ve antes de disparar sea lo que sale.
+public enum BokehQuality: Sendable {
+    /// Foto final.
+    case photo
+    /// Visor en vivo (30 cuadros por segundo).
+    case preview
+
+    /// Radio máximo, en píxeles de la versión reducida sobre la que se desenfoca.
+    var workRadius: Float {
+        switch self {
+        case .photo: 16
+        case .preview: 8
+        }
+    }
+
+    /// Puntos de la espiral que llena el disco.
+    var sampleCount: UInt32 {
+        switch self {
+        case .photo: 160
+        case .preview: 64
+        }
+    }
+}
+
+/// Texturas intermedias del bokeh, para no crearlas en cada cuadro del visor.
+public final class BokehScratch: @unchecked Sendable {
+    var prepared: MTLTexture?
+    var blurred: MTLTexture?
+
+    public init() {}
 }
 
 /// Qué parte de la foto es una persona, según Vision: 0 = fondo, 255 = persona. Está "derecha"
@@ -96,11 +132,23 @@ public struct PersonMatte: Sendable, Equatable {
 
     /// Recorte de la persona de una imagen derecha. nil si no hay una persona o si Vision no pudo.
     public static func detect(in image: CGImage) -> PersonMatte? {
+        detect(handler: VNImageRequestHandler(cgImage: image, options: [:]), quality: .accurate)
+    }
+
+    /// Recorte de la persona de un cuadro del visor (derecho). Con `.balanced`, Vision tarda unos
+    /// milisegundos: sirve para el visor en vivo. nil si no hay una persona o si Vision no pudo.
+    public static func detect(inFrame frame: CVPixelBuffer,
+                              quality: VNGeneratePersonSegmentationRequest.QualityLevel = .balanced) -> PersonMatte? {
+        detect(handler: VNImageRequestHandler(cvPixelBuffer: frame, options: [:]), quality: quality)
+    }
+
+    private static func detect(handler: VNImageRequestHandler,
+                               quality: VNGeneratePersonSegmentationRequest.QualityLevel) -> PersonMatte? {
         let request = VNGeneratePersonSegmentationRequest()
-        request.qualityLevel = .accurate
+        request.qualityLevel = quality
         request.outputPixelFormat = kCVPixelFormatType_OneComponent8
         do {
-            try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
+            try handler.perform([request])
         } catch {
             return nil
         }
@@ -109,6 +157,17 @@ public struct PersonMatte: Sendable, Equatable {
               matte.coverage >= minimumCoverage
         else { return nil }
         return matte
+    }
+
+    /// Mezcla con el recorte del cuadro anterior (`weight` = cuánto pesa este), para que el borde de
+    /// la persona no titile en el visor. Si los tamaños no coinciden, queda este.
+    public func blended(withPrevious previous: PersonMatte?, weight: Float) -> PersonMatte {
+        guard let previous, previous.width == width, previous.height == height else { return self }
+        let w = min(max(weight, 0), 1)
+        let mixed = zip(pixels, previous.pixels).map { new, old in
+            UInt8((Float(new) * w + Float(old) * (1 - w)).rounded())
+        }
+        return PersonMatte(width: width, height: height, pixels: mixed)
     }
 
     init?(pixelBuffer buffer: CVPixelBuffer) {
@@ -138,6 +197,7 @@ struct BokehUniforms {
     var roundness: Float
     var catEye: Float
     var highlightGain: Float
+    var sampleCount: UInt32
     /// Coordenadas del matte (derecho) a partir de las de la foto guardada: x = dot(matteX, (u, v, 1)).
     var matteX: SIMD4<Float>
     var matteY: SIMD4<Float>
@@ -156,7 +216,7 @@ extension LookRenderer {
     /// Desenfoca todo lo que no es la persona. `orientation` es la orientación EXIF de `image` (el
     /// matte está derecho). Si el desenfoque no se notaría, devuelve la imagen sin tocar.
     public func applyBokeh(_ bokeh: Bokeh, to image: CGImage, matte: PersonMatte, orientation: Int) throws -> CGImage {
-        guard bokeh.radius(shortSide: min(image.width, image.height)) >= Bokeh.minimumRadius else { return image }
+        guard bokeh.isVisible(shortSide: min(image.width, image.height)) else { return image }
         let (source, colorSpace) = try makeTexture(image: image)
         let target = try makeRenderTarget(width: image.width, height: image.height)
         let matteTexture = try makeTexture(matte: matte)
@@ -171,15 +231,19 @@ extension LookRenderer {
     }
 
     /// Codifica el bokeh de `source` a `destination` (mismo tamaño): reduce la fuente sacando la
-    /// persona, desenfoca con la forma de la apertura y compone la persona nítida encima.
-    func encodeBokeh(commandBuffer: MTLCommandBuffer, source: MTLTexture, matte: MTLTexture,
-                     destination: MTLTexture, bokeh: Bokeh, orientation: Int) throws {
+    /// persona, desenfoca con la forma de la apertura y compone la persona nítida encima. `scratch`
+    /// guarda las texturas intermedias entre llamadas (para el visor).
+    public func encodeBokeh(commandBuffer: MTLCommandBuffer, source: MTLTexture, matte: MTLTexture,
+                            destination: MTLTexture, bokeh: Bokeh, orientation: Int,
+                            quality: BokehQuality = .photo, scratch: BokehScratch? = nil) throws {
         let radius = bokeh.radius(shortSide: min(source.width, source.height))
-        let scale = Bokeh.workScale(radius: radius)
+        let scale = Bokeh.workScale(radius: radius, quality: quality)
         let workWidth = max(1, Int((Float(source.width) * scale).rounded()))
         let workHeight = max(1, Int((Float(source.height) * scale).rounded()))
-        let prepared = try makeRenderTarget(width: workWidth, height: workHeight, pixelFormat: .rgba16Float)
-        let blurred = try makeRenderTarget(width: workWidth, height: workHeight, pixelFormat: .rgba16Float)
+        let prepared = try workTexture(scratch?.prepared, width: workWidth, height: workHeight)
+        let blurred = try workTexture(scratch?.blurred, width: workWidth, height: workHeight)
+        scratch?.prepared = prepared
+        scratch?.blurred = blurred
 
         let transform = Framing.displayedPointTransform(orientation: orientation)
         var uniforms = BokehUniforms(
@@ -190,6 +254,7 @@ extension LookRenderer {
             roundness: bokeh.roundness,
             catEye: Bokeh.catEye,
             highlightGain: Bokeh.highlightGain,
+            sampleCount: quality.sampleCount,
             matteX: SIMD4(transform.x, 0),
             matteY: SIMD4(transform.y, 0))
 
@@ -199,6 +264,12 @@ extension LookRenderer {
                             target: blurred, uniforms: &uniforms)
         try encodeBokehPass(commandBuffer: commandBuffer, fragment: "bokeh_composite",
                             textures: [source, blurred, matte], target: destination, uniforms: &uniforms)
+    }
+
+    /// `existing` si tiene ese tamaño; si no, una nueva.
+    private func workTexture(_ existing: MTLTexture?, width: Int, height: Int) throws -> MTLTexture {
+        if let existing, existing.width == width, existing.height == height { return existing }
+        return try makeRenderTarget(width: width, height: height, pixelFormat: .rgba16Float)
     }
 
     private func encodeBokehPass(commandBuffer: MTLCommandBuffer, fragment: String, textures: [MTLTexture],

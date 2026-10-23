@@ -49,7 +49,7 @@ extension LookRenderer {
         properties[kCGImageDestinationLossyCompressionQuality] = quality
         let orientation = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
 
-        if let bokeh, bokeh.radius(shortSide: min(image.width, image.height)) >= Bokeh.minimumRadius,
+        if let bokeh, bokeh.isVisible(shortSide: min(image.width, image.height)),
            let matte = PersonMatte.detect(inPhoto: data) {
             image = try applyBokeh(bokeh, to: image, matte: matte, orientation: orientation)
         }

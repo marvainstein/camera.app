@@ -104,6 +104,8 @@ final class CameraModel {
     var framing = Framing() { didSet { updatePreview() } }
     /// Focal equivalente del lente de la foto de la fototeca (de su EXIF).
     private var photoFocalLength: Double?
+    /// Cálculo del recorte de persona de la foto abierta.
+    private var stillMatteTask: Task<Void, Never>?
     /// Focal equivalente del lente que saca (o sacó) la imagen del visor.
     var lensFocalLength: Double {
         if photo != nil { return photoFocalLength ?? 24 }
@@ -120,7 +122,14 @@ final class CameraModel {
             updatePreview()
         }
     }
-    var settings = CaptureSettings() { didSet { if settings != oldValue { applySettings() } } }
+    var settings = CaptureSettings() {
+        didSet {
+            guard settings != oldValue else { return }
+            applySettings()
+            // P/A y el f-número cambian el bokeh del visor.
+            if settings.program != oldValue.program { updatePreview() }
+        }
+    }
     /// Punto tocado para enfocar, 0…1 sobre el visor; nil = foco automático.
     private(set) var focusPoint: CGPoint?
     /// Sube con cada toque y cada ajuste de brillo, para volver a encender el cuadrado (aunque se toque
@@ -279,6 +288,9 @@ final class CameraModel {
 
     private func updatePreview() {
         preview?.contentMode = showsWholeFrame ? .aspectFit : .aspectFill
+        preview?.bokeh = bokeh
+        // El recorte en vivo solo corre en modo A con la cámara (con una foto abierta se usa el suyo).
+        preview?.liveMatte.isEnabled = bokeh != nil && photo == nil && status == .running
         let split = compareSplit ?? 0
         let frame = framing.isFullFrame ? nil : framing.rect(in: sourceSize, lensFocalLength: lensFocalLength)
         if let draft {
@@ -552,12 +564,30 @@ final class CameraModel {
                 LoadedTexture(texture: try renderer.makePreviewTexture(photo: data))
             }.value
             preview?.still = loaded.texture
+            preview?.stillMatte = nil
             photo = data
             photoFocalLength = Framing.lensFocalLength(ofPhoto: data)
             message = nil
             updatePreview()
+            loadStillMatte(for: data)
         } catch {
             message = "No se pudo abrir esa foto"
+        }
+    }
+
+    /// Recorte de la persona de la foto abierta, para ver el bokeh en el visor (con la calidad de la
+    /// foto final: se calcula una sola vez).
+    private func loadStillMatte(for data: Data) {
+        guard let renderer = preview?.looks else { return }
+        stillMatteTask?.cancel()
+        stillMatteTask = Task {
+            let loaded = await Task.detached(priority: .utility) {
+                PersonMatte.detect(inPhoto: data).flatMap { matte in
+                    (try? renderer.makeTexture(matte: matte)).map(LoadedTexture.init)
+                }
+            }.value
+            guard !Task.isCancelled, photo == data else { return }
+            preview?.stillMatte = loaded?.texture
         }
     }
 
@@ -606,7 +636,9 @@ final class CameraModel {
     func closePhoto() {
         photo = nil
         editingPhoto = nil
+        stillMatteTask?.cancel()
         preview?.still = nil
+        preview?.stillMatte = nil
         updatePreview()
     }
 

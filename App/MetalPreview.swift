@@ -15,6 +15,15 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
     var still: MTLTexture?
     /// Cámara en vivo: llenar la pantalla; foto o editor: la imagen entera.
     var contentMode = LookContentMode.aspectFill
+    /// Modo A: desenfoque del fondo detrás de las personas, igual que en la foto final.
+    var bokeh: Bokeh?
+    /// Recorte de la persona de la foto de la fototeca (derecho, como `still`).
+    var stillMatte: MTLTexture?
+    /// Recorte de la persona en vivo, para la cámara.
+    let liveMatte: LiveMatte
+    private let bokehScratch = BokehScratch()
+    /// Imagen con el bokeh, del tamaño de la fuente; se reutiliza cuadro a cuadro.
+    private var bokehTarget: MTLTexture?
 
     private let textureCache: CVMetalTextureCache
     private let lock = NSLock()
@@ -30,11 +39,13 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
         }
         self.looks = looks
         self.textureCache = cache
+        self.liveMatte = LiveMatte(renderer: looks)
     }
 
     /// Se llama desde la cola de video de la cámara.
     nonisolated func enqueue(_ pixelBuffer: CVPixelBuffer) {
         lock.withLock { pendingFrame = pixelBuffer }
+        liveMatte.process(pixelBuffer)
     }
 
     private func latestFrame() -> CVPixelBuffer? {
@@ -42,6 +53,22 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
     }
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
+
+    /// La fuente con el bokeh (versión liviana), o nil si no corresponde: modo P, sin persona o con
+    /// un desenfoque que no se notaría.
+    private func encodeBokeh(commandBuffer: MTLCommandBuffer, source: MTLTexture) throws -> MTLTexture? {
+        guard let bokeh, bokeh.isVisible(shortSide: min(source.width, source.height)),
+              let matte = still != nil ? stillMatte : liveMatte.texture
+        else { return nil }
+        if bokehTarget?.width != source.width || bokehTarget?.height != source.height {
+            bokehTarget = try looks.makeRenderTarget(width: source.width, height: source.height)
+        }
+        guard let target = bokehTarget else { return nil }
+        // La foto y los cuadros del visor ya están derechos, igual que sus recortes.
+        try looks.encodeBokeh(commandBuffer: commandBuffer, source: source, matte: matte, destination: target,
+                              bokeh: bokeh, orientation: 1, quality: .preview, scratch: bokehScratch)
+        return target
+    }
 
     /// Un punto del visor (0…1 sobre la vista de tamaño `viewSize`) en coordenadas 0…1 de la imagen
     /// que se muestra, teniendo en cuenta lo que recorta `contentMode`. nil si todavía no hay imagen.
@@ -73,8 +100,11 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
         var parameters = parameters
         parameters.seed = frameIndex
         do {
-            try looks.encode(commandBuffer: commandBuffer, source: source, lut: lut,
-                             destination: drawable.texture, parameters: parameters, contentMode: contentMode)
+            // El bokeh va antes del Look, como en la foto; al comparar, el "antes" es la fuente sin nada.
+            let shown = try encodeBokeh(commandBuffer: commandBuffer, source: source) ?? source
+            try looks.encode(commandBuffer: commandBuffer, source: shown, lut: lut,
+                             destination: drawable.texture, parameters: parameters, contentMode: contentMode,
+                             original: source)
         } catch {
             return
         }

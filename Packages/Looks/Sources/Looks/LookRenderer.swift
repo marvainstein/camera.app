@@ -208,13 +208,15 @@ public final class LookRenderer: @unchecked Sendable {
         return state
     }
 
-    /// Codifica el Look sobre `destination` (por ejemplo `drawable.texture`).
+    /// Codifica el Look sobre `destination` (por ejemplo `drawable.texture`). `original` es lo que se
+    /// ve del lado "antes" al comparar, si no es `source` (por ejemplo, la imagen sin el bokeh).
     public func encode(commandBuffer: MTLCommandBuffer,
                        source: MTLTexture,
                        lut: MTLTexture?,
                        destination: MTLTexture,
                        parameters: LookParameters,
-                       contentMode: LookContentMode = .stretch) throws {
+                       contentMode: LookContentMode = .stretch,
+                       original: MTLTexture? = nil) throws {
         let effects = parameters.effects.clamped
         let needsGlow = effects.halation > 0 || effects.bloom > 0
         let base = try effects.claridad != 0 || needsGlow ? encodeClarityBase(commandBuffer: commandBuffer, source: source) : nil
@@ -258,6 +260,7 @@ public final class LookRenderer: @unchecked Sendable {
         encoder.setFragmentTexture(lut, index: 1)
         encoder.setFragmentTexture(blurred, index: 2)
         encoder.setFragmentTexture(glow, index: 3)
+        encoder.setFragmentTexture(original ?? source, index: 4)
         encoder.setFragmentSamplerState(sourceSampler, index: 0)
         encoder.setFragmentSamplerState(lutSampler, index: 1)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
