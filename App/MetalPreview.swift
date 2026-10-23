@@ -20,6 +20,8 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
     private let lock = NSLock()
     private nonisolated(unsafe) var pendingFrame: CVPixelBuffer?
     private var frameIndex: UInt32 = 0
+    /// Tamaño (en píxeles) de la última imagen dibujada, para pasar toques a coordenadas de la imagen.
+    private(set) var sourceSize: (Int, Int)?
 
     init(looks: LookRenderer) throws {
         var cache: CVMetalTextureCache?
@@ -41,6 +43,16 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
+    /// Un punto del visor (0…1 sobre la vista de tamaño `viewSize`) en coordenadas 0…1 de la imagen
+    /// que se muestra, teniendo en cuenta lo que recorta `contentMode`. nil si todavía no hay imagen.
+    func imagePoint(forViewPoint point: CGPoint, viewSize: CGSize) -> CGPoint? {
+        guard let sourceSize, viewSize.width > 0, viewSize.height > 0 else { return nil }
+        let t = LookRenderer.uvTransform(source: sourceSize,
+                                         destination: (Int(viewSize.width.rounded()), Int(viewSize.height.rounded())),
+                                         contentMode: contentMode)
+        return CGPoint(x: point.x * CGFloat(t.x) + CGFloat(t.z), y: point.y * CGFloat(t.y) + CGFloat(t.w))
+    }
+
     func draw(in view: MTKView) {
         var cameraTexture: CVMetalTexture?
         var source = still ?? fallback
@@ -57,6 +69,7 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
         else { return }
 
         frameIndex &+= 1
+        sourceSize = (source.width, source.height)
         var parameters = parameters
         parameters.seed = frameIndex
         do {
@@ -73,8 +86,24 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
     }
 }
 
+/// Gestos sobre el visor. Los recibe la propia vista de Metal: una capa de SwiftUI encima no siempre
+/// se entera de los toques que caen sobre una vista de UIKit.
+struct PreviewGestures {
+    /// Toque: punto en la vista y tamaño de la vista.
+    var onTap: (CGPoint, CGSize) -> Void
+    /// Arrastre vertical: puntos desde que empezó (positivo = hacia abajo); nil al soltar.
+    var onVerticalDrag: (CGFloat?) -> Void
+    /// Si ahora se puede arrastrar (si no, el arrastre no empieza).
+    var canDrag: () -> Bool
+}
+
 struct MetalPreview: UIViewRepresentable {
     let renderer: PreviewRenderer
+    var gestures: PreviewGestures?
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
 
     func makeUIView(context: Context) -> MTKView {
         let view = MTKView(frame: .zero, device: renderer.looks.device)
@@ -82,8 +111,41 @@ struct MetalPreview: UIViewRepresentable {
         view.preferredFramesPerSecond = 30
         view.delegate = renderer
         view.backgroundColor = .black
+        let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.tapped(_:)))
+        let pan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.panned(_:)))
+        pan.maximumNumberOfTouches = 1
+        pan.delegate = context.coordinator
+        view.addGestureRecognizer(tap)
+        view.addGestureRecognizer(pan)
+        context.coordinator.gestures = gestures
         return view
     }
 
-    func updateUIView(_ view: MTKView, context: Context) {}
+    func updateUIView(_ view: MTKView, context: Context) {
+        context.coordinator.gestures = gestures
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var gestures: PreviewGestures?
+
+        @objc func tapped(_ recognizer: UITapGestureRecognizer) {
+            guard recognizer.state == .ended, let view = recognizer.view else { return }
+            gestures?.onTap(recognizer.location(in: view), view.bounds.size)
+        }
+
+        @objc func panned(_ recognizer: UIPanGestureRecognizer) {
+            guard let view = recognizer.view else { return }
+            switch recognizer.state {
+            case .began, .changed: gestures?.onVerticalDrag(recognizer.translation(in: view).y)
+            default: gestures?.onVerticalDrag(nil)
+            }
+        }
+
+        /// El arrastre solo empieza si es más vertical que horizontal y se puede ajustar el brillo.
+        func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
+            guard let pan = recognizer as? UIPanGestureRecognizer, let view = pan.view else { return true }
+            let velocity = pan.velocity(in: view)
+            return abs(velocity.y) > abs(velocity.x) && (gestures?.canDrag() ?? false)
+        }
+    }
 }

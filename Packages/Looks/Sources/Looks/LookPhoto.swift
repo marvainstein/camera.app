@@ -36,17 +36,25 @@ extension LookRenderer {
     ///
     /// Con `framing` la foto se recorta al marco antes de aplicar el Look (así el viñeteo y el grano
     /// se miden sobre el recorte); `lensFocalLength` es la focal equivalente del lente que la sacó.
+    ///
+    /// Con `bokeh`, antes de todo se desenfoca lo que no es una persona (la óptica va antes que la
+    /// película). Si no hay una persona, la foto queda nítida.
     public func renderPhoto(_ data: Data, lut: MTLTexture?, parameters: LookParameters,
-                            framing: Framing = Framing(), lensFocalLength: Double = 24,
+                            framing: Framing = Framing(), lensFocalLength: Double = 24, bokeh: Bokeh? = nil,
                             outputType: UTType = .heic, quality: Double = 0.9) throws -> Data {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               var image = CGImageSourceCreateImageAtIndex(source, 0, nil)
         else { throw LookRendererError.unsupportedImage }
         var properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] ?? [:]
         properties[kCGImageDestinationLossyCompressionQuality] = quality
+        let orientation = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
+
+        if let bokeh, bokeh.radius(shortSide: min(image.width, image.height)) >= Bokeh.minimumRadius,
+           let matte = PersonMatte.detect(inPhoto: data) {
+            image = try applyBokeh(bokeh, to: image, matte: matte, orientation: orientation)
+        }
 
         if !framing.isFullFrame {
-            let orientation = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
             let width = CGFloat(image.width), height = CGFloat(image.height)
             let shown = (5...8).contains(orientation) ? CGSize(width: height, height: width) : CGSize(width: width, height: height)
             let r = Framing.storedRect(framing.rect(in: shown, lensFocalLength: lensFocalLength), orientation: orientation)

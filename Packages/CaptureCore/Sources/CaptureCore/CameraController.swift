@@ -45,6 +45,8 @@ public final class CameraController: NSObject, @unchecked Sendable {
     private var device: AVCaptureDevice?
     private let frameHandler = OSAllocatedUnfairLock<(@Sendable (CVPixelBuffer) -> Void)?>(initialState: nil)
     private let inFlight = OSAllocatedUnfairLock(initialState: [Int64: PhotoCaptureDelegate]())
+    private let subjectAreaHandler = OSAllocatedUnfairLock<(@Sendable () -> Void)?>(initialState: nil)
+    private var subjectAreaObserver: NSObjectProtocol?
 
     public override init() {
         super.init()
@@ -65,6 +67,12 @@ public final class CameraController: NSObject, @unchecked Sendable {
     /// Se llama en la cola de video con cada frame BGRA (ya rotado a vertical).
     public func setFrameHandler(_ handler: (@Sendable (CVPixelBuffer) -> Void)?) {
         frameHandler.withLock { $0 = handler }
+    }
+
+    /// Se llama (en cualquier hilo) cuando, después de enfocar con un toque, la escena cambió
+    /// bastante (se movió el teléfono): conviene volver al foco automático.
+    public func setSubjectAreaChangeHandler(_ handler: (@Sendable () -> Void)?) {
+        subjectAreaHandler.withLock { $0 = handler }
     }
 
     private func onSessionQueue<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T {
@@ -107,6 +115,11 @@ public final class CameraController: NSObject, @unchecked Sendable {
             }
 
             self.device = device
+            subjectAreaObserver = NotificationCenter.default.addObserver(
+                forName: AVCaptureDevice.subjectAreaDidChangeNotification, object: device, queue: nil
+            ) { [subjectAreaHandler] _ in
+                subjectAreaHandler.withLock { $0 }?()
+            }
             return CameraCapabilities(
                 isProRAWSupported: photoOutput.isAppleProRAWEnabled,
                 isRAWSupported: !photoOutput.availableRawPhotoPixelFormatTypes.isEmpty,
@@ -175,6 +188,49 @@ public final class CameraController: NSObject, @unchecked Sendable {
                     with: AVCaptureDevice.WhiteBalanceGains(redGain: clamped.x, greenGain: clamped.y, blueGain: clamped.z),
                     completionHandler: nil)
             }
+        }
+    }
+
+    // MARK: - Foco por toque
+
+    /// Enfoca y mide la luz en `point` (coordenadas del sensor, ver `FocusGeometry`). El foco queda
+    /// fijo ahí hasta que cambie la escena; con exposición manual (ISO u obturación fijos) solo se
+    /// mueve el foco.
+    public func focus(at point: CGPoint) async throws {
+        try await onSessionQueue { [self] in
+            guard let device else { throw CameraError.noCamera }
+            try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+            if device.isFocusPointOfInterestSupported, device.isFocusModeSupported(.autoFocus) {
+                device.focusPointOfInterest = point
+                device.focusMode = .autoFocus
+            }
+            if device.isExposurePointOfInterestSupported, device.exposureMode != .custom,
+               device.isExposureModeSupported(.continuousAutoExposure) {
+                device.exposurePointOfInterest = point
+                device.exposureMode = .continuousAutoExposure
+            }
+            device.isSubjectAreaChangeMonitoringEnabled = true
+        }
+    }
+
+    /// Vuelve al foco y la exposición automáticos sobre todo el cuadro.
+    public func resetFocus() async throws {
+        try await onSessionQueue { [self] in
+            guard let device else { throw CameraError.noCamera }
+            try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+            let center = CGPoint(x: 0.5, y: 0.5)
+            if device.isFocusPointOfInterestSupported, device.isFocusModeSupported(.continuousAutoFocus) {
+                device.focusPointOfInterest = center
+                device.focusMode = .continuousAutoFocus
+            }
+            if device.isExposurePointOfInterestSupported, device.exposureMode != .custom,
+               device.isExposureModeSupported(.continuousAutoExposure) {
+                device.exposurePointOfInterest = center
+                device.exposureMode = .continuousAutoExposure
+            }
+            device.isSubjectAreaChangeMonitoringEnabled = false
         }
     }
 

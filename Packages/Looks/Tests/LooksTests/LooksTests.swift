@@ -2,6 +2,7 @@ import CoreGraphics
 import ImageIO
 import Foundation
 import Metal
+import simd
 import Testing
 import UniformTypeIdentifiers
 @testable import Looks
@@ -172,7 +173,10 @@ private let recipeLookIDs = ["natural", "dorado-200", "retrato-400", "clasico", 
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("LooksTests-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let look = try #require(try LookCatalog.bundled().first { $0.id == "verde-azulado" })
+        let bundled = try #require(try LookCatalog.bundled().first { $0.id == "verde-azulado" })
+        // Id propio: si otro test ya generó "verde-azulado", estaría en la caché de memoria y no se
+        // escribiría en `directory`.
+        let look = Look(id: "cache-\(UUID().uuidString)", name: bundled.name, recipe: bundled.recipe)
         let lut = try LookCatalog.lut(for: look, cacheDirectory: directory)
         let key = LookCatalog.cacheKey(id: look.id, recipe: try #require(look.recipe))
         let file = directory.appendingPathComponent(key + ".lut")
@@ -728,5 +732,176 @@ private let hasMetal = MTLCreateSystemDefaultDevice() != nil
         #expect(output.width == 256 && output.height == 64)
         let data = try #require(output.dataProvider?.data as Data?)
         #expect(maxChannelDifference(pixels, [UInt8](data)) == 0)
+    }
+}
+
+@Suite struct BokehTests {
+    @Test func radiusIsInverselyProportionalToFNumber() {
+        let wide = Bokeh(fNumber: 1.4), half = Bokeh(fNumber: 2.8)
+        #expect(abs(wide.radiusFraction / half.radiusFraction - 2) < 1e-5)
+        #expect(abs(wide.radius(shortSide: 3000) - 66) < 0.01)
+    }
+
+    @Test func closedApertureBarelyBlurs() {
+        // f/16 en una foto de 12 MP: unos pocos píxeles; en una miniatura, nada.
+        #expect(Bokeh(fNumber: 16).radius(shortSide: 3024) < 6)
+        #expect(Bokeh(fNumber: 16).radius(shortSide: 100) < Bokeh.minimumRadius)
+    }
+
+    @Test func workScaleCapsTheRadius() {
+        #expect(abs(66 * Bokeh.workScale(radius: 66) - Bokeh.workRadius) < 1e-4)
+        #expect(Bokeh.workScale(radius: 8) == 1)
+    }
+
+    @Test func discIsRoundWideOpenAndShowsTheBladesClosed() {
+        #expect(Bokeh(fNumber: 1.4).roundness == 1)
+        #expect(Bokeh(fNumber: 2.8).roundness > 0 && Bokeh(fNumber: 2.8).roundness < 1)
+        #expect(Bokeh(fNumber: 4).roundness == 0)
+        #expect(Bokeh(fNumber: 11).roundness == 0)
+    }
+
+    @Test func matteCoverage() {
+        let matte = PersonMatte(width: 4, height: 2, pixels: [255, 255, 0, 0, 200, 0, 0, 10])
+        #expect(matte.coverage == 3.0 / 8)
+    }
+
+    @Test func adjustmentKeepsTheBokeh() throws {
+        let look = Look(id: "natural", name: "Natural", recipe: .neutral)
+        let adjustment = PhotoAdjustment(look: look, intensity: 1, framing: Framing(), lensFocalLength: 24,
+                                         bokeh: Bokeh(fNumber: 2))
+        #expect(PhotoAdjustment(data: try adjustment.encoded())?.bokeh == Bokeh(fNumber: 2))
+    }
+
+    @Test func adjustmentsSavedBeforeTheBokehHaveNone() throws {
+        // Como las guardaba la versión anterior: sin la clave "bokeh".
+        let look = Look(id: "natural", name: "Natural", recipe: .neutral)
+        let old = PhotoAdjustment(look: look, intensity: 1, framing: Framing(), lensFocalLength: 24)
+        let json = String(decoding: try old.encoded(), as: UTF8.self)
+        #expect(!json.contains("bokeh"))
+        let decoded = try #require(PhotoAdjustment(data: Data(json.utf8)))
+        #expect(decoded.bokeh == nil)
+    }
+
+    @Test(arguments: [1, 3, 6, 8])
+    func displayedPointTransformInvertsStoredRect(orientation: Int) {
+        let t = Framing.displayedPointTransform(orientation: orientation)
+        for point in [CGPoint(x: 0.1, y: 0.2), CGPoint(x: 0.7, y: 0.4), CGPoint(x: 0.9, y: 0.95)] {
+            let stored = Framing.storedRect(CGRect(origin: point, size: .zero), orientation: orientation).origin
+            let p = SIMD3<Float>(Float(stored.x), Float(stored.y), 1)
+            #expect(abs(Double(simd_dot(t.x, p)) - point.x) < 1e-6)
+            #expect(abs(Double(simd_dot(t.y, p)) - point.y) < 1e-6)
+        }
+    }
+}
+
+@Suite(.enabled(if: hasMetal, "No hay dispositivo Metal")) struct BokehPipelineTests {
+    let renderer: LookRenderer
+    // Lado corto 300: a f/1.4 el radio es 6,6 px y se desenfoca a resolución completa.
+    let width = 400, height = 300
+
+    init() throws {
+        renderer = try LookRenderer()
+    }
+
+    private func image(_ color: (Int, Int) -> (UInt8, UInt8, UInt8)) -> [UInt8] {
+        var pixels = [UInt8](repeating: 255, count: width * height * 4)
+        for y in 0..<height {
+            for x in 0..<width {
+                let (r, g, b) = color(x, y)
+                let i = (y * width + x) * 4
+                pixels[i] = r
+                pixels[i + 1] = g
+                pixels[i + 2] = b
+            }
+        }
+        return pixels
+    }
+
+    /// Persona en la mitad izquierda (x < 200).
+    private var leftHalfPerson: PersonMatte {
+        PersonMatte(width: width, height: height,
+                    pixels: (0..<(width * height)).map { $0 % width < width / 2 ? 255 : 0 })
+    }
+
+    /// Rayas verticales de un píxel: el detalle más fino posible.
+    private var stripes: [UInt8] {
+        image { x, _ in x % 2 == 0 ? (0, 0, 0) : (255, 255, 255) }
+    }
+
+    private func bokeh(_ pixels: [UInt8], matte: PersonMatte, fNumber: Float = 1.4,
+                       orientation: Int = 1) throws -> [UInt8] {
+        let source = try renderer.makeTexture(rgba8: pixels, width: width, height: height)
+        let target = try renderer.makeRenderTarget(width: width, height: height)
+        let commandBuffer = try #require(renderer.commandQueue.makeCommandBuffer())
+        try renderer.encodeBokeh(commandBuffer: commandBuffer, source: source, matte: renderer.makeTexture(matte: matte),
+                                 destination: target, bokeh: Bokeh(fNumber: fNumber), orientation: orientation)
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        return try renderer.readBytes(target)
+    }
+
+    private func channel(_ pixels: [UInt8], _ x: Int, _ y: Int, _ c: Int = 0) -> Int {
+        Int(pixels[(y * width + x) * 4 + c])
+    }
+
+    /// Diferencia máxima entre píxeles vecinos de una fila, en un rango de x.
+    private func roughness(_ pixels: [UInt8], xs: Range<Int>, y: Int = 150) -> Int {
+        xs.dropLast().map { abs(channel(pixels, $0, y) - channel(pixels, $0 + 1, y)) }.max() ?? 0
+    }
+
+    @Test func personStaysSharpAndBackgroundBlurs() throws {
+        let input = stripes
+        let output = try bokeh(input, matte: leftHalfPerson)
+        for y in stride(from: 0, to: height, by: 7) {
+            for x in 0..<190 {
+                #expect(channel(output, x, y) == channel(input, x, y))
+            }
+        }
+        #expect(roughness(input, xs: 220..<390) == 255)
+        #expect(roughness(output, xs: 220..<390) < 12)
+    }
+
+    @Test func personDoesNotBleedIntoTheBackground() throws {
+        // Persona roja, fondo gris: al lado del borde el fondo tiene que seguir gris, no rojizo.
+        let input = image { x, _ in x < 200 ? (255, 0, 0) : (128, 128, 128) }
+        let output = try bokeh(input, matte: leftHalfPerson)
+        for x in [204, 210, 300] {
+            #expect(abs(channel(output, x, 150, 0) - 128) <= 2)
+            #expect(abs(channel(output, x, 150, 1) - 128) <= 2)
+        }
+    }
+
+    @Test func pointOfLightBecomesADisc() throws {
+        // Un punto blanco sobre fondo oscuro, sin persona: un disco de radio ~6,6 px.
+        let input = image { x, y in abs(x - 200) <= 1 && abs(y - 150) <= 1 ? (255, 255, 255) : (10, 10, 10) }
+        let output = try bokeh(input, matte: PersonMatte(width: 4, height: 4, pixels: Array(repeating: 0, count: 16)))
+        #expect(channel(output, 203, 150) > 100)
+        #expect(channel(output, 200, 154) > 100)
+        #expect(abs(channel(output, 212, 150) - 10) <= 2)
+        #expect(abs(channel(output, 200, 162) - 10) <= 2)
+    }
+
+    @Test func matteFollowsTheEXIFOrientation() throws {
+        // Guardada girada (6): la mitad de arriba de la foto derecha es la mitad izquierda guardada.
+        let input = stripes
+        let upright = PersonMatte(width: height, height: width,
+                                  pixels: (0..<(width * height)).map { $0 / height < width / 2 ? 255 : 0 })
+        let output = try bokeh(input, matte: upright, orientation: 6)
+        #expect(roughness(output, xs: 10..<190) == 255)
+        #expect(roughness(output, xs: 220..<390) < 12)
+    }
+
+    @Test func applyBokehSkipsWhenItWouldNotShow() throws {
+        let provider = try #require(CGDataProvider(data: Data(stripes) as CFData))
+        let image = try #require(CGImage(
+            width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue), provider: provider,
+            decode: nil, shouldInterpolate: false, intent: .defaultIntent))
+        // f/16 sobre 300 px: radio 0,6 px, no se aplica.
+        let same = try renderer.applyBokeh(Bokeh(fNumber: 16), to: image, matte: leftHalfPerson, orientation: 1)
+        #expect(same === image)
+        let blurred = try renderer.applyBokeh(Bokeh(fNumber: 1.4), to: image, matte: leftHalfPerson, orientation: 1)
+        #expect(blurred.width == width && blurred.height == height)
     }
 }

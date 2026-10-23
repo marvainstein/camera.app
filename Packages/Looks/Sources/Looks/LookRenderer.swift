@@ -73,6 +73,12 @@ struct LookUniforms {
     var frameY: Float
     var frameWidth: Float
     var frameHeight: Float
+
+    /// Para pases auxiliares: la fuente entera sobre el destino, sin efectos.
+    static let passThrough = LookUniforms(
+        uvTransform: SIMD4(1, 1, 0, 0), intensity: 0, grainAmount: 0, grainCell: 1, seed: 0, lutSize: 1, hasLUT: 0,
+        sharpness: 0, clarity: 0, vignette: 0, hasBlur: 0, halation: 0, bloom: 0, hasGlow: 0, split: 0, splitWidth: 0,
+        frameX: 0, frameY: 0, frameWidth: 0, frameHeight: 0)
 }
 
 /// Aplica un Look (LUT 3D + intensidad + efectos + grano) con Metal. Sirve para el preview en vivo
@@ -81,7 +87,7 @@ public final class LookRenderer: @unchecked Sendable {
     public let device: MTLDevice
     public let commandQueue: MTLCommandQueue
     private let library: MTLLibrary
-    private let sourceSampler: MTLSamplerState
+    let sourceSampler: MTLSamplerState
     private let lutSampler: MTLSamplerState
     private let pipelines = OSAllocatedUnfairLock(initialState: [PipelineKey: MTLRenderPipelineState]())
 
@@ -99,7 +105,7 @@ public final class LookRenderer: @unchecked Sendable {
         guard let device, let queue = device.makeCommandQueue() else { throw LookRendererError.metalUnavailable }
         self.device = device
         self.commandQueue = queue
-        self.library = try device.makeLibrary(source: LookShaders.source, options: nil)
+        self.library = try device.makeLibrary(source: LookShaders.source + BokehShaders.source, options: nil)
 
         let sampler = MTLSamplerDescriptor()
         sampler.minFilter = .linear
@@ -170,7 +176,7 @@ public final class LookRenderer: @unchecked Sendable {
         return Array(UnsafeRawBufferPointer(start: buffer.contents(), count: length))
     }
 
-    private func upload(_ bytes: [UInt8], descriptor: MTLTextureDescriptor, bytesPerPixel: Int) throws -> MTLTexture {
+    func upload(_ bytes: [UInt8], descriptor: MTLTextureDescriptor, bytesPerPixel: Int) throws -> MTLTexture {
         let bytesPerRow = descriptor.width * bytesPerPixel
         let bytesPerImage = bytesPerRow * descriptor.height
         guard bytes.count == bytesPerImage * descriptor.depth,
@@ -287,10 +293,7 @@ public final class LookRenderer: @unchecked Sendable {
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else {
             throw LookRendererError.resourceCreationFailed("render encoder")
         }
-        var uniforms = LookUniforms(uvTransform: SIMD4(1, 1, 0, 0), intensity: 0, grainAmount: 0, grainCell: 1,
-                                    seed: 0, lutSize: 1, hasLUT: 0, sharpness: 0, clarity: 0, vignette: 0, hasBlur: 0,
-                                    halation: 0, bloom: 0, hasGlow: 0, split: 0, splitWidth: 0,
-                                    frameX: 0, frameY: 0, frameWidth: 0, frameHeight: 0)
+        var uniforms = LookUniforms.passThrough
         encoder.setRenderPipelineState(try pipeline(for: target.pixelFormat, fragment: fragment))
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<LookUniforms>.stride, index: 0)
         encoder.setFragmentTexture(source, index: 0)
@@ -300,7 +303,7 @@ public final class LookRenderer: @unchecked Sendable {
     }
 
     /// Escala/desplazamiento de las UV de la fuente para el modo de contenido pedido.
-    static func uvTransform(source: (Int, Int), destination: (Int, Int), contentMode: LookContentMode) -> SIMD4<Float> {
+    public static func uvTransform(source: (Int, Int), destination: (Int, Int), contentMode: LookContentMode) -> SIMD4<Float> {
         guard contentMode != .stretch, source.0 > 0, source.1 > 0, destination.0 > 0, destination.1 > 0 else {
             return SIMD4(1, 1, 0, 0)
         }
@@ -330,36 +333,46 @@ public final class LookRenderer: @unchecked Sendable {
     /// Aplica el Look a una imagen completa (foto final). Trabaja en 8 bits en el espacio de color
     /// de la imagen (el LUT opera sobre valores codificados).
     public func render(image: CGImage, lut: MTLTexture?, parameters: LookParameters) throws -> CGImage {
-        let width = image.width, height = image.height
-        let colorSpace = image.colorSpace.flatMap { $0.model == .rgb ? $0 : nil }
-            ?? CGColorSpace(name: CGColorSpace.sRGB)!
-        let bitmapInfo = CGImageAlphaInfo.noneSkipLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
-        var pixels = [UInt8](repeating: 0, count: width * height * 4)
-        let drawn = pixels.withUnsafeMutableBytes { raw -> Bool in
-            guard let context = CGContext(data: raw.baseAddress, width: width, height: height, bitsPerComponent: 8,
-                                          bytesPerRow: width * 4, space: colorSpace, bitmapInfo: bitmapInfo)
-            else { return false }
-            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-            return true
-        }
-        guard drawn else { throw LookRendererError.unsupportedImage }
-
-        let source = try makeTexture(rgba8: pixels, width: width, height: height)
-        let target = try makeRenderTarget(width: width, height: height)
+        let (source, colorSpace) = try makeTexture(image: image)
+        let target = try makeRenderTarget(width: image.width, height: image.height)
         guard let commandBuffer = commandQueue.makeCommandBuffer() else {
             throw LookRendererError.resourceCreationFailed("command buffer")
         }
         try encode(commandBuffer: commandBuffer, source: source, lut: lut, destination: target, parameters: parameters)
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
+        return try makeImage(texture: target, colorSpace: colorSpace)
+    }
 
-        let output = try readBytes(target)
+    /// La imagen como textura `.rgba8Unorm`, en su espacio de color (o sRGB si no es RGB).
+    func makeTexture(image: CGImage) throws -> (MTLTexture, CGColorSpace) {
+        let width = image.width, height = image.height
+        let colorSpace = image.colorSpace.flatMap { $0.model == .rgb ? $0 : nil }
+            ?? CGColorSpace(name: CGColorSpace.sRGB)!
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        let drawn = pixels.withUnsafeMutableBytes { raw -> Bool in
+            guard let context = CGContext(data: raw.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                                          bytesPerRow: width * 4, space: colorSpace, bitmapInfo: Self.bitmapInfo)
+            else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        guard drawn else { throw LookRendererError.unsupportedImage }
+        return (try makeTexture(rgba8: pixels, width: width, height: height), colorSpace)
+    }
+
+    /// Una textura `.rgba8Unorm` como `CGImage` en `colorSpace`.
+    func makeImage(texture: MTLTexture, colorSpace: CGColorSpace) throws -> CGImage {
+        let width = texture.width, height = texture.height
+        let output = try readBytes(texture)
         guard let provider = CGDataProvider(data: Data(output) as CFData),
               let result = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
                                    bytesPerRow: width * 4, space: colorSpace,
-                                   bitmapInfo: CGBitmapInfo(rawValue: bitmapInfo), provider: provider,
+                                   bitmapInfo: CGBitmapInfo(rawValue: Self.bitmapInfo), provider: provider,
                                    decode: nil, shouldInterpolate: false, intent: .defaultIntent)
         else { throw LookRendererError.unsupportedImage }
         return result
     }
+
+    private static let bitmapInfo = CGImageAlphaInfo.noneSkipLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
 }
