@@ -1,6 +1,6 @@
 import Foundation
 
-/// Lo que la app le aplicó a una foto: receta, efectos, grano, intensidad y encuadre. Se guarda con la
+/// Lo que la app le aplicó a una foto: receta, efectos, grano, intensidad, encuadre y bokeh. Se guarda con la
 /// foto en Fotos (`PHAdjustmentData`) junto al original, así se puede reabrir y cambiar todo partiendo
 /// del original, y "Revertir" en Fotos vuelve a la foto sin tocar.
 public struct PhotoAdjustment: Codable, Sendable, Equatable {
@@ -15,12 +15,15 @@ public struct PhotoAdjustment: Codable, Sendable, Equatable {
     public var framing: Framing
     /// Focal equivalente del lente con que se sacó, para rehacer el recorte.
     public var lensFocalLength: Double
+    /// Apertura simulada (modo A). nil = sin bokeh; también en las fotos guardadas antes de que existiera.
+    public var bokeh: Bokeh?
 
-    public init(look: Look, intensity: Float, framing: Framing, lensFocalLength: Double) {
+    public init(look: Look, intensity: Float, framing: Framing, lensFocalLength: Double, bokeh: Bokeh? = nil) {
         self.look = look
         self.intensity = intensity
         self.framing = framing
         self.lensFocalLength = lensFocalLength
+        self.bokeh = bokeh
     }
 
     public func encoded() throws -> Data {

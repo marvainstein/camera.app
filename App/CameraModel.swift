@@ -1,4 +1,6 @@
 import CaptureCore
+import CoreGraphics
+import Foundation
 import Looks
 import Metal
 import Observation
@@ -64,7 +66,20 @@ final class CameraModel {
     private(set) var userLooks: [Look] = []
     private(set) var capabilities: CameraCapabilities?
     private(set) var isCapturing = false
-    private(set) var message: String?
+    /// Aviso que se muestra unos segundos y se va solo.
+    private(set) var message: String? {
+        didSet {
+            messageTask?.cancel()
+            guard message != nil else { return }
+            messageTask = Task { [weak self] in
+                try? await Task.sleep(for: Self.messageDuration)
+                guard !Task.isCancelled else { return }
+                self?.message = nil
+            }
+        }
+    }
+    private var messageTask: Task<Void, Never>?
+    private static let messageDuration = Duration.seconds(4)
     /// Foto de la fototeca para probar Looks: mientras está, el visor la muestra en vez de la cámara.
     /// El disparador guarda los cambios en la misma foto (`editingPhoto`) o, si no se pudo abrir para
     /// editar, una copia con el Look.
@@ -72,7 +87,15 @@ final class CameraModel {
     /// La foto de Fotos que se está editando, con su original y los ajustes guardados.
     private(set) var editingPhoto: PhotoLibrary.EditablePhoto?
 
-    var selectedLookID: String? { didSet { loadSelectedLUT(); updatePreview() } }
+    var selectedLookID: String? {
+        didSet {
+            // Al volver a abrir la app, arranca con el último Look elegido.
+            if let selectedLookID { UserDefaults.standard.set(selectedLookID, forKey: Self.lastLookKey) }
+            loadSelectedLUT()
+            updatePreview()
+        }
+    }
+    private static let lastLookKey = "ultimoLook"
     var intensity: Float = 1 { didSet { updatePreview() } }
     var grain: Float = 0 { didSet { updatePreview() } }
     /// Efectos del Look elegido.
@@ -98,6 +121,23 @@ final class CameraModel {
         }
     }
     var settings = CaptureSettings() { didSet { if settings != oldValue { applySettings() } } }
+    /// Punto tocado para enfocar, 0…1 sobre el visor; nil = foco automático.
+    private(set) var focusPoint: CGPoint?
+    /// Sube con cada toque y cada ajuste de brillo, para volver a encender el cuadrado (aunque se toque
+    /// el mismo lugar).
+    private(set) var focusTaps = 0
+    /// Se está arrastrando el dedo para cambiar el brillo.
+    private(set) var isAdjustingBrightness = false
+    private var brightnessDragStart: Float = 0
+    /// Último cambio de brillo: cambiar la exposición hace que la cámara crea que cambió la escena,
+    /// así que un rato después no se vuelve al foco automático.
+    private var lastBrightnessChange: ContinuousClock.Instant?
+    /// Puntos que hay que arrastrar el dedo (y que se mueve el sol) por cada paso de EV.
+    static let pointsPerEV: CGFloat = 25
+    /// Modo A: el f-número simulado desenfoca el fondo detrás de las personas al guardar la foto.
+    var bokeh: Bokeh? {
+        if case .aperturePriority(let fNumber) = settings.program { Bokeh(fNumber: fNumber) } else { nil }
+    }
 
     let preview: PreviewRenderer?
     private let camera = CameraController()
@@ -143,6 +183,9 @@ final class CameraModel {
         }
         do {
             camera.setFrameHandler { [preview] frame in preview.enqueue(frame) }
+            camera.setSubjectAreaChangeHandler { [weak self] in
+                Task { @MainActor in self?.resetFocus() }
+            }
             capabilities = try await camera.configure()
             // Sin RAW en este iPhone: el mismo formato sin RAW.
             if capabilities?.isRAWSupported == false, settings.photoFormat.includesRAW {
@@ -168,8 +211,9 @@ final class CameraModel {
             message = "No se pudieron cargar tus recetas: \(error)"
         }
         rebuildLooks()
-        if let first = looks.first(where: { $0.id != "natural" }) ?? looks.first {
-            select(first)
+        let lastID = UserDefaults.standard.string(forKey: Self.lastLookKey)
+        if let look = looks.first(where: { $0.id == lastID }) ?? looks.first(where: { $0.id != "natural" }) ?? looks.first {
+            select(look)
         }
     }
 
@@ -428,6 +472,76 @@ final class CameraModel {
         }
     }
 
+    // MARK: - Foco por toque
+
+    /// Se puede tocar el visor para enfocar: cámara en vivo, sin foto abierta, editor ni comparación.
+    var canTapToFocus: Bool {
+        status == .running && photo == nil && draft == nil && compareSplit == nil
+    }
+
+    /// El brillo (compensación EV) solo se puede tocar con la exposición automática.
+    var canAdjustBrightness: Bool {
+        settings.iso == nil && settings.shutterSeconds == nil
+    }
+
+    /// Rango de la compensación EV, el mismo que en los controles manuales.
+    var exposureBiasRange: ClosedRange<Float> {
+        max(-3, limits.biasRange.lowerBound)...min(3, limits.biasRange.upperBound)
+    }
+
+    /// Enfoca y mide la luz donde se tocó. `point` va en puntos de la vista de tamaño `viewSize`.
+    func focus(atViewPoint point: CGPoint, viewSize: CGSize) {
+        guard canTapToFocus, viewSize.width > 0, viewSize.height > 0 else { return }
+        let normalized = CGPoint(x: point.x / viewSize.width, y: point.y / viewSize.height)
+        guard let framePoint = preview?.imagePoint(forViewPoint: normalized, viewSize: viewSize) else { return }
+        focusPoint = normalized
+        focusTaps += 1
+        let devicePoint = FocusGeometry.devicePoint(fromFrame: framePoint)
+        Task {
+            do {
+                try await camera.focus(at: devicePoint)
+            } catch {
+                message = "No se pudo enfocar: \(error)"
+            }
+        }
+    }
+
+    /// Con el foco tocado y exposición automática, arrastrar el dedo por el visor cambia el brillo.
+    var canDragBrightness: Bool {
+        canTapToFocus && focusPoint != nil && canAdjustBrightness
+    }
+
+    /// Arrastre vertical sobre el visor: hacia arriba aclara, hacia abajo oscurece (compensación EV,
+    /// en pasos de 0,1). `translation` en puntos desde que empezó; nil al soltar.
+    func dragBrightness(by translation: CGFloat?) {
+        guard let translation else {
+            if isAdjustingBrightness {
+                isAdjustingBrightness = false
+                focusTaps += 1
+            }
+            return
+        }
+        guard canDragBrightness else { return }
+        if !isAdjustingBrightness {
+            isAdjustingBrightness = true
+            brightnessDragStart = settings.exposureBias
+        }
+        let range = exposureBiasRange
+        let bias = min(max(brightnessDragStart - Float(translation / Self.pointsPerEV), range.lowerBound), range.upperBound)
+        settings.exposureBias = (bias * 10).rounded() / 10
+        lastBrightnessChange = .now
+    }
+
+    /// Vuelve al foco automático (la escena cambió después de tocar), salvo mientras se ajusta el brillo
+    /// o justo después: el cambio de exposición también cuenta como "cambio de escena".
+    func resetFocus() {
+        if isAdjustingBrightness { return }
+        if let lastBrightnessChange, ContinuousClock.now - lastBrightnessChange < .seconds(2) { return }
+        guard focusPoint != nil else { return }
+        focusPoint = nil
+        Task { try? await camera.resetFocus() }
+    }
+
     // MARK: - Foto de la fototeca
 
     /// Muestra la foto en el visor (decodificada fuera del main actor).
@@ -467,7 +581,7 @@ final class CameraModel {
     }
 
     /// Vuelve a poner lo aplicado a una foto. Busca el mismo Look (misma receta) o, si cambió, el de
-    /// mismo id; los efectos, el grano y el encuadre se toman de la foto.
+    /// mismo id; los efectos, el grano, el encuadre y el bokeh se toman de la foto.
     private func restore(_ adjustment: PhotoAdjustment) {
         let stored = adjustment.look
         if let look = looks.first(where: { $0.lutKey == stored.lutKey }) ?? looks.first(where: { $0.id == stored.id }) {
@@ -483,6 +597,8 @@ final class CameraModel {
         intensity = adjustment.intensity
         photoFocalLength = adjustment.lensFocalLength
         framing = adjustment.framing
+        // El modo de arriba (P o A y su f-número) muestra el bokeh que tiene la foto.
+        settings.program = adjustment.bokeh.map { .aperturePriority(fNumber: $0.fNumber) } ?? .program
         updatePreview()
     }
 
@@ -497,13 +613,13 @@ final class CameraModel {
     static let adjustmentFormat = PhotoLibrary.AdjustmentFormat(identifier: PhotoAdjustment.formatIdentifier,
                                                                 version: PhotoAdjustment.formatVersion)
 
-    /// Lo aplicado ahora (Look, efectos, grano, intensidad, encuadre), para guardar con la foto.
+    /// Lo aplicado ahora (Look, efectos, grano, intensidad, encuadre, bokeh), para guardar con la foto.
     private func currentAdjustment() throws -> Data {
         let base = selectedLook ?? Look(id: "natural", name: "Natural", recipe: .neutral)
         let look = Look(id: base.id, name: base.name, lut: base.lut, recipe: base.recipe, grain: grain,
                         effects: effects.isNeutral ? nil : effects)
         return try PhotoAdjustment(look: look, intensity: intensity, framing: framing,
-                                   lensFocalLength: lensFocalLength).encoded()
+                                   lensFocalLength: lensFocalLength, bokeh: bokeh).encoded()
     }
 
     /// Foto de la fototeca: guarda los cambios en la misma foto (el original queda, y se puede volver a
@@ -535,7 +651,7 @@ final class CameraModel {
         }
     }
 
-    /// Look, efectos, grano y recorte actuales, para aplicarlos a una foto fuera del main actor.
+    /// Look, efectos, grano, recorte y bokeh actuales, para aplicarlos a una foto fuera del main actor.
     private func bakeJob(requiringLUT: Bool = true, outputType: UTType? = nil) -> BakeJob? {
         guard let renderer = preview?.looks else { return nil }
         let lut = selectedTexture
@@ -543,7 +659,7 @@ final class CameraModel {
         return BakeJob(renderer: renderer, lut: lut,
                        parameters: LookParameters(intensity: intensity, grain: grain, effects: effects,
                                                   seed: .random(in: 0...UInt32.max)),
-                       framing: framing, lensFocalLength: lensFocalLength,
+                       framing: framing, lensFocalLength: lensFocalLength, bokeh: bokeh,
                        outputType: outputType ?? (settings.photoFormat.processed == .heic ? .heic : .jpeg))
     }
 
@@ -557,8 +673,9 @@ final class CameraModel {
         defer { isCapturing = false }
         do {
             let photo = try await camera.capturePhoto(settings: settings)
-            // Sin LUT cargado todavía, igual se recorta al marco. La versión con el Look va en JPEG (es
-            // lo que acepta una edición de Fotos); el original queda en el formato elegido.
+            // Sin LUT cargado todavía, igual se recorta al marco (y en modo A, se desenfoca el fondo). La
+            // versión con el Look va en JPEG (es lo que acepta una edición de Fotos); el original queda en
+            // el formato elegido.
             if let processed = photo.processed, let job = bakeJob(requiringLUT: false, outputType: .jpeg) {
                 let rendered = try await Task.detached(priority: .userInitiated) {
                     try job.render(processed)
@@ -590,10 +707,11 @@ private struct BakeJob: @unchecked Sendable {
     let parameters: LookParameters
     let framing: Framing
     let lensFocalLength: Double
+    let bokeh: Bokeh?
     let outputType: UTType
 
     func render(_ data: Data) throws -> Data {
         try renderer.renderPhoto(data, lut: lut, parameters: parameters, framing: framing,
-                                 lensFocalLength: lensFocalLength, outputType: outputType)
+                                 lensFocalLength: lensFocalLength, bokeh: bokeh, outputType: outputType)
     }
 }

@@ -71,7 +71,10 @@ struct CameraScreen: View {
 
     /// El visor; al comparar, arrastrar mueve la línea de antes/después.
     private func comparablePreview(_ preview: PreviewRenderer) -> some View {
-        MetalPreview(renderer: preview)
+        MetalPreview(renderer: preview, gestures: PreviewGestures(
+            onTap: { point, size in model.focus(atViewPoint: point, viewSize: size) },
+            onVerticalDrag: { model.dragBrightness(by: $0) },
+            canDrag: { model.canDragBrightness }))
             .overlay {
                 GeometryReader { geometry in
                     Color.clear
@@ -82,6 +85,11 @@ struct CameraScreen: View {
                         })
                 }
                 .allowsHitTesting(model.compareSplit != nil)
+            }
+            .overlay {
+                if model.canTapToFocus {
+                    FocusOverlay(model: model)
+                }
             }
             .overlay(alignment: .top) {
                 if model.compareSplit != nil {

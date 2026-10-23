@@ -135,3 +135,13 @@ extension Comparable {
         min(max(self, range.lowerBound), range.upperBound)
     }
 }
+
+/// Punto tocado en el visor → punto de interés de la cámara.
+public enum FocusGeometry {
+    /// El visor muestra los frames girados 90° (vertical), pero el foco y la exposición se piden en
+    /// coordenadas del sensor, que está apaisado: (0, 0) arriba a la izquierda con el teléfono
+    /// acostado y los botones de volumen abajo. `point` va en 0…1 sobre el frame derecho.
+    public static func devicePoint(fromFrame point: CGPoint) -> CGPoint {
+        CGPoint(x: min(max(point.y, 0), 1), y: min(max(1 - point.x, 0), 1))
+    }
+}

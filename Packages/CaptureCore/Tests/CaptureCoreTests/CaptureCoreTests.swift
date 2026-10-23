@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import CaptureCore
 
@@ -74,5 +75,23 @@ private let limits = ExposureLimits(isoRange: 32...3200, shutterRange: (1.0 / 16
         #expect(PhotoFormat.rawHEIC.withoutRAW == .heic)
         #expect(PhotoFormat.raw.withoutRAW == .jpeg)
         #expect(PhotoFormat.allCases.allSatisfy { !$0.withoutRAW.includesRAW })
+    }
+}
+
+@Suite struct FocusGeometryTests {
+    @Test func centerStaysCentered() {
+        #expect(FocusGeometry.devicePoint(fromFrame: CGPoint(x: 0.5, y: 0.5)) == CGPoint(x: 0.5, y: 0.5))
+    }
+
+    @Test func portraitCornersMapToTheLandscapeSensor() {
+        // Arriba a la izquierda del visor vertical = abajo a la izquierda del sensor apaisado.
+        #expect(FocusGeometry.devicePoint(fromFrame: CGPoint(x: 0, y: 0)) == CGPoint(x: 0, y: 1))
+        // Arriba a la derecha del visor = arriba a la izquierda del sensor.
+        #expect(FocusGeometry.devicePoint(fromFrame: CGPoint(x: 1, y: 0)) == CGPoint(x: 0, y: 0))
+        #expect(FocusGeometry.devicePoint(fromFrame: CGPoint(x: 0.25, y: 0.8)) == CGPoint(x: 0.8, y: 0.75))
+    }
+
+    @Test func pointsOutsideTheFrameAreClamped() {
+        #expect(FocusGeometry.devicePoint(fromFrame: CGPoint(x: -0.2, y: 1.3)) == CGPoint(x: 1, y: 1))
     }
 }
