@@ -35,6 +35,9 @@ struct CameraScreen: View {
                     // Foto de la fototeca o editor abierto: la imagen entera, entre los controles.
                     comparablePreview(preview)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
+                } else if model.status == .running, model.draft == nil {
+                    // Cámara en vivo: nivel e histograma entre los controles.
+                    ViewfinderHUD(model: model)
                 } else {
                     Spacer()
                 }
@@ -106,8 +109,8 @@ struct CameraScreen: View {
     private func comparablePreview(_ preview: PreviewRenderer) -> some View {
         MetalPreview(renderer: preview, gestures: PreviewGestures(
             onTap: { point, size in model.focus(atViewPoint: point, viewSize: size) },
-            onVerticalDrag: { model.dragBrightness(by: $0) },
-            canDrag: { model.canDragBrightness }))
+            onDrag: { model.dragBrightness(by: $0) },
+            shouldBeginDrag: { model.shouldBeginBrightnessDrag(velocity: $0) }))
             .overlay {
                 GeometryReader { geometry in
                     Color.clear
@@ -118,6 +121,15 @@ struct CameraScreen: View {
                         })
                 }
                 .allowsHitTesting(model.compareSplit != nil)
+            }
+            .overlay {
+                if model.guides.grid, model.draft == nil {
+                    GeometryReader { geometry in
+                        if let rect = preview.viewRect(forImageRect: model.frameRect, viewSize: geometry.size) {
+                            GridOverlay(rect: rect)
+                        }
+                    }
+                }
             }
             .overlay {
                 if model.showsFocusSquare {
@@ -176,6 +188,8 @@ struct CameraScreen: View {
 
             framingMenu
 
+            guidesMenu
+
             Button {
                 showsManual = true
             } label: {
@@ -183,6 +197,18 @@ struct CameraScreen: View {
             }
             .accessibilityLabel("Controles manuales")
         }
+    }
+
+    /// Cuadrícula, nivel e histograma del visor.
+    private var guidesMenu: some View {
+        Menu {
+            Toggle("Cuadrícula", systemImage: "squareshape.split.3x3", isOn: $model.guides.grid)
+            Toggle("Nivel", systemImage: "level", isOn: $model.guides.level)
+            Toggle("Histograma", systemImage: "chart.bar.xaxis", isOn: $model.guides.histogram)
+        } label: {
+            Image(systemName: "squareshape.split.3x3")
+        }
+        .accessibilityLabel("Guías del visor")
     }
 
     /// Qué guarda cada toma: RAW + JPG por defecto.

@@ -24,6 +24,8 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
     var depthFocus: DepthMap.Focus?
     /// Recorte de la persona y profundidad en vivo, para la cámara.
     let liveMatte: LiveMatte
+    /// Histograma del visor en vivo.
+    let liveHistogram = LiveHistogram()
     let liveDepth: LiveDepth
     /// Focal simulada (la del encuadre) y la del lente, para el desenfoque por profundidad.
     var focalLength: Double = 24
@@ -55,6 +57,7 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
     nonisolated func enqueue(_ pixelBuffer: CVPixelBuffer) {
         lock.withLock { pendingFrame = pixelBuffer }
         liveMatte.process(pixelBuffer)
+        liveHistogram.process(pixelBuffer)
     }
 
     private func latestFrame() -> CVPixelBuffer? {
@@ -91,6 +94,21 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
         try looks.encodeBokeh(commandBuffer: commandBuffer, source: source, matte: matte, destination: target,
                               bokeh: bokeh, orientation: 1, quality: .preview, scratch: bokehScratch)
         return target
+    }
+
+    /// Un rectángulo de la imagen (coordenadas 0…1) en puntos de la vista de tamaño `viewSize`, teniendo
+    /// en cuenta lo que recorta `contentMode`. nil si todavía no hay imagen.
+    func viewRect(forImageRect rect: CGRect, viewSize: CGSize) -> CGRect? {
+        guard viewSize.width > 0, viewSize.height > 0 else { return nil }
+        // La foto abierta se conoce antes de dibujarla; la cámara, por su último cuadro (o 3:4 vertical).
+        let size = (still ?? fallback).map { ($0.width, $0.height) } ?? sourceSize ?? (3, 4)
+        let t = LookRenderer.uvTransform(source: size,
+                                         destination: (Int(viewSize.width.rounded()), Int(viewSize.height.rounded())),
+                                         contentMode: contentMode)
+        let x0 = (rect.minX - CGFloat(t.z)) / CGFloat(t.x), x1 = (rect.maxX - CGFloat(t.z)) / CGFloat(t.x)
+        let y0 = (rect.minY - CGFloat(t.w)) / CGFloat(t.y), y1 = (rect.maxY - CGFloat(t.w)) / CGFloat(t.y)
+        return CGRect(x: x0 * viewSize.width, y: y0 * viewSize.height,
+                      width: (x1 - x0) * viewSize.width, height: (y1 - y0) * viewSize.height)
     }
 
     /// Un punto del visor (0…1 sobre la vista de tamaño `viewSize`) en coordenadas 0…1 de la imagen
@@ -144,10 +162,10 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
 struct PreviewGestures {
     /// Toque: punto en la vista y tamaño de la vista.
     var onTap: (CGPoint, CGSize) -> Void
-    /// Arrastre vertical: puntos desde que empezó (positivo = hacia abajo); nil al soltar.
-    var onVerticalDrag: (CGFloat?) -> Void
-    /// Si ahora se puede arrastrar (si no, el arrastre no empieza).
-    var canDrag: () -> Bool
+    /// Arrastre: cuánto se movió el dedo desde que empezó, en puntos de la pantalla; nil al soltar.
+    var onDrag: (CGPoint?) -> Void
+    /// Si un arrastre que empieza con esta velocidad (puntos por segundo) va (si no, no empieza).
+    var shouldBeginDrag: (CGPoint) -> Bool
 }
 
 struct MetalPreview: UIViewRepresentable {
@@ -189,16 +207,14 @@ struct MetalPreview: UIViewRepresentable {
         @objc func panned(_ recognizer: UIPanGestureRecognizer) {
             guard let view = recognizer.view else { return }
             switch recognizer.state {
-            case .began, .changed: gestures?.onVerticalDrag(recognizer.translation(in: view).y)
-            default: gestures?.onVerticalDrag(nil)
+            case .began, .changed: gestures?.onDrag(recognizer.translation(in: view))
+            default: gestures?.onDrag(nil)
             }
         }
 
-        /// El arrastre solo empieza si es más vertical que horizontal y se puede ajustar el brillo.
         func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
             guard let pan = recognizer as? UIPanGestureRecognizer, let view = pan.view else { return true }
-            let velocity = pan.velocity(in: view)
-            return abs(velocity.y) > abs(velocity.x) && (gestures?.canDrag() ?? false)
+            return gestures?.shouldBeginDrag(pan.velocity(in: view)) ?? false
         }
     }
 }

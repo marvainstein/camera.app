@@ -146,6 +146,17 @@ final class CameraModel {
     }
     /// Punto tocado para enfocar, 0…1 sobre el visor; nil = foco automático.
     private(set) var focusPoint: CGPoint?
+    /// Cómo está sostenido el teléfono (para el nivel y para girar lo que se dibuja sobre el visor).
+    let motion = DeviceMotion()
+    /// Cuadrícula, nivel e histograma.
+    var guides = ViewfinderGuides.load() {
+        didSet {
+            guides.save()
+            updatePreview()
+        }
+    }
+    /// Último histograma del visor en vivo (vacío si está apagado).
+    private(set) var histogram: [Float] = []
     /// Se está arrastrando el dedo para cambiar el brillo.
     private(set) var isAdjustingBrightness = false
     /// El cuadrado del foco se ve: unos segundos después de tocar o de cambiar el brillo. El foco
@@ -166,6 +177,17 @@ final class CameraModel {
             nil
         }
     }
+    /// Cómo se sostenía el teléfono en el disparo que se está guardando (nil fuera de un disparo).
+    private var captureOrientation: DeviceTilt.Orientation?
+    /// El bokeh para la foto que se guarda: el punto tocado está en coordenadas del visor (vertical) y la
+    /// foto puede salir apaisada; editando, ya está en coordenadas de la foto.
+    private var bokehForPhoto: Bokeh? {
+        guard var bokeh, let orientation = captureOrientation, let focus = bokeh.focus else { return bokeh }
+        let point = orientation.photoPoint(fromFrame: CGPoint(x: CGFloat(focus.x), y: CGFloat(focus.y)))
+        bokeh.focus = Bokeh.FocusPoint(x: Float(point.x), y: Float(point.y))
+        return bokeh
+    }
+
     /// Lo que queda nítido en el bokeh: el punto tocado, en coordenadas 0…1 de la imagen entera y
     /// derecha. nil = automático (la persona o el centro).
     private(set) var bokehFocus: Bokeh.FocusPoint?
@@ -221,6 +243,10 @@ final class CameraModel {
         }
         do {
             camera.setFrameHandler { [preview] frame in preview.enqueue(frame) }
+            preview.liveHistogram.setHandler { @MainActor [weak self] bins in self?.histogram = bins }
+            // Al girar el teléfono cambia el marco del recorte (vertical o apaisado).
+            motion.onOrientationChange = { [weak self] in self?.updatePreview() }
+            motion.start()
             camera.setDepthHandler { [liveDepth = preview.liveDepth] depth in liveDepth.process(depth) }
             capabilities = try await camera.configure(depth: Self.usesDepth(settings.program))
             // Sin RAW en este iPhone: el mismo formato sin RAW.
@@ -307,6 +333,19 @@ final class CameraModel {
         selectedLook.flatMap { lutTextures[$0.lutKey] }
     }
 
+    /// Lo que va a salir en la foto, en coordenadas 0…1 del visor: la imagen entera o el recorte por focal.
+    /// Con la cámara y el teléfono horizontal, la foto va a salir apaisada: el recorte se calcula así y
+    /// se muestra girado en el visor (que es vertical).
+    var frameRect: CGRect {
+        guard !framing.isFullFrame else { return CGRect(x: 0, y: 0, width: 1, height: 1) }
+        if photo == nil, motion.tilt.orientation.isLandscape {
+            let landscape = framing.rect(in: CGSize(width: sourceSize.height, height: sourceSize.width),
+                                         lensFocalLength: lensFocalLength)
+            return CGRect(x: landscape.minY, y: landscape.minX, width: landscape.height, height: landscape.width)
+        }
+        return framing.rect(in: sourceSize, lensFocalLength: lensFocalLength)
+    }
+
     /// Tamaño (o proporción) de la imagen del visor, para ubicar el marco del recorte.
     private var sourceSize: CGSize {
         if let still = preview?.still { return CGSize(width: still.width, height: still.height) }
@@ -319,6 +358,8 @@ final class CameraModel {
     private func updatePreview() {
         preview?.contentMode = showsWholeFrame ? .aspectFit : .aspectFill
         preview?.bokeh = bokeh
+        preview?.liveHistogram.isEnabled = guides.histogram && photo == nil && status == .running
+        if !guides.histogram || photo != nil { histogram = [] }
         preview?.liveDepth.bokeh = bokeh
         preview?.liveDepth.isEnabled = bokeh != nil && photo == nil && status == .running
             && capabilities?.hasDepth == true
@@ -328,7 +369,7 @@ final class CameraModel {
         // El recorte en vivo solo corre en modo A con la cámara (con una foto abierta se usa el suyo).
         preview?.liveMatte.isEnabled = bokeh != nil && photo == nil && status == .running
         let split = compareSplit ?? 0
-        let frame = framing.isFullFrame ? nil : framing.rect(in: sourceSize, lensFocalLength: lensFocalLength)
+        let frame = framing.isFullFrame ? nil : frameRect
         if let draft {
             if let draftTexture { preview?.lut = draftTexture }
             preview?.parameters = LookParameters(intensity: intensity, grain: draft.grain, effects: draft.effects,
@@ -637,9 +678,25 @@ final class CameraModel {
         canTapToFocus && focusPoint != nil && canAdjustBrightness
     }
 
-    /// Arrastre vertical sobre el visor: hacia arriba aclara, hacia abajo oscurece (compensación EV,
-    /// en pasos de 0,1). `translation` en puntos desde que empezó; nil al soltar.
-    func dragBrightness(by translation: CGFloat?) {
+    /// "Arriba" y "a la derecha" de quien sostiene el teléfono, en la pantalla (que no gira).
+    private var userAxes: (up: CGPoint, right: CGPoint) {
+        let angle = motion.tilt.orientation.uiRotation * .pi / 180
+        return (CGPoint(x: sin(angle), y: -cos(angle)), CGPoint(x: cos(angle), y: sin(angle)))
+    }
+
+    /// El arrastre para el brillo empieza si va más hacia "arriba o abajo" (de quien sostiene el teléfono,
+    /// vertical u horizontal) que hacia los costados.
+    func shouldBeginBrightnessDrag(velocity: CGPoint) -> Bool {
+        let axes = userAxes
+        let along = abs(velocity.x * axes.up.x + velocity.y * axes.up.y)
+        let across = abs(velocity.x * axes.right.x + velocity.y * axes.right.y)
+        return canDragBrightness && along > across
+    }
+
+    /// Arrastre sobre el visor: hacia arriba (de quien sostiene el teléfono) aclara, hacia abajo
+    /// oscurece (compensación EV, en pasos de 0,1). `translation` en puntos de la pantalla desde que
+    /// empezó; nil al soltar.
+    func dragBrightness(by translation: CGPoint?) {
         guard let translation else {
             if isAdjustingBrightness {
                 isAdjustingBrightness = false
@@ -655,7 +712,9 @@ final class CameraModel {
             focusSquareTask?.cancel()
         }
         let range = exposureBiasRange
-        let bias = min(max(brightnessDragStart - Float(translation / Self.pointsPerEV), range.lowerBound), range.upperBound)
+        let up = userAxes.up
+        let upward = translation.x * up.x + translation.y * up.y
+        let bias = min(max(brightnessDragStart + Float(upward / Self.pointsPerEV), range.lowerBound), range.upperBound)
         settings.exposureBias = (bias * 10).rounded() / 10
     }
 
@@ -802,7 +861,7 @@ final class CameraModel {
         let look = Look(id: base.id, name: base.name, lut: base.lut, recipe: base.recipe, grain: grain,
                         effects: effects.isNeutral ? nil : effects)
         return try PhotoAdjustment(look: look, intensity: intensity, framing: framing,
-                                   lensFocalLength: lensFocalLength, bokeh: bokeh).encoded()
+                                   lensFocalLength: lensFocalLength, bokeh: bokehForPhoto).encoded()
     }
 
     /// Foto de la fototeca: guarda los cambios en la misma foto (el original queda, y se puede volver a
@@ -855,7 +914,7 @@ final class CameraModel {
         return BakeJob(renderer: renderer, lut: lut,
                        parameters: LookParameters(intensity: intensity, grain: grain, effects: effects,
                                                   seed: .random(in: 0...UInt32.max)),
-                       framing: framing, lensFocalLength: lensFocalLength, bokeh: bokeh,
+                       framing: framing, lensFocalLength: lensFocalLength, bokeh: bokehForPhoto,
                        outputType: outputType ?? (settings.photoFormat.processed == .heic ? .heic : .jpeg))
     }
 
@@ -868,10 +927,15 @@ final class CameraModel {
         isCapturing = true
         defer { isCapturing = false }
         shutterCount += 1
+        // La foto sale derecha según cómo se sostiene el teléfono (horizontal, apaisada).
+        let orientation = motion.tilt.orientation
+        captureOrientation = orientation
+        defer { captureOrientation = nil }
         do {
-            let photo = try await camera.capturePhoto(settings: settings)
+            let photo = try await camera.capturePhoto(settings: settings,
+                                                      rotationAngle: orientation.captureRotationAngle)
             // Con un punto tocado, la lente enfocó ahí: se guarda su distancia para avisar al editar.
-            if let tapped = bokeh, tapped.focus != nil, let processed = photo.processed {
+            if let tapped = bokehForPhoto, tapped.focus != nil, let processed = photo.processed {
                 opticalFocus = await Task.detached(priority: .userInitiated) {
                     DepthMap.load(fromPhoto: processed)?.focus(for: tapped, matte: nil).disparity
                 }.value

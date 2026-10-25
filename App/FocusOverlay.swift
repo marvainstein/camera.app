@@ -1,9 +1,9 @@
 import SwiftUI
 
 /// Foco por toque, como en la cámara del iPhone: un cuadrado amarillo donde se tocó y, al lado, un sol
-/// que sube o baja con el brillo (arrastrar el dedo por el visor hacia arriba aclara). Solo dibuja: los
-/// toques y arrastres los recibe el visor (`MetalPreview`). Unos segundos después desaparece; el foco
-/// sigue fijo.
+/// que sube o baja con el brillo (arrastrar el dedo por el visor hacia arriba aclara). Con el teléfono
+/// horizontal, el sol va a la derecha de quien lo sostiene y gira con él. Solo dibuja: los toques y
+/// arrastres los recibe el visor (`MetalPreview`). Unos segundos después desaparece; el foco sigue fijo.
 struct FocusOverlay: View {
     let model: CameraModel
 
@@ -13,15 +13,15 @@ struct FocusOverlay: View {
         GeometryReader { geometry in
             if let point = model.focusPoint {
                 let center = CGPoint(x: point.x * geometry.size.width, y: point.y * geometry.size.height)
-                // El sol va a la derecha del cuadrado, o a la izquierda si no entra.
-                let sunOnRight = center.x + Self.squareSize / 2 + 48 < geometry.size.width
-                let sunX = center.x + (sunOnRight ? 1 : -1) * (Self.squareSize / 2 + 22)
+                let rotation = model.motion.tilt.orientation.uiRotation
                 ZStack {
                     square
                         .position(center)
                     if model.canAdjustBrightness {
                         sun
-                            .position(x: sunX, y: center.y)
+                            .rotationEffect(.degrees(rotation))
+                            .position(Self.sunPosition(center: center, rotation: rotation, bounds: geometry.size))
+                            .animation(.easeInOut(duration: 0.3), value: rotation)
                     }
                 }
                 .opacity(model.isFocusSquareVisible || model.isAdjustingBrightness ? 1 : 0)
@@ -29,6 +29,19 @@ struct FocusOverlay: View {
             }
         }
         .allowsHitTesting(false)
+    }
+
+    /// A la derecha del cuadrado para quien sostiene el teléfono (girado `rotation` grados); si ahí no
+    /// entra en la pantalla, a su izquierda.
+    static func sunPosition(center: CGPoint, rotation: Double, bounds: CGSize) -> CGPoint {
+        let angle = rotation * .pi / 180
+        let right = CGPoint(x: cos(angle), y: sin(angle))
+        let distance = squareSize / 2 + 22
+        let candidate = CGPoint(x: center.x + right.x * distance, y: center.y + right.y * distance)
+        let margin: CGFloat = 26
+        let fits = (margin...(bounds.width - margin)).contains(candidate.x)
+            && (margin...(bounds.height - margin)).contains(candidate.y)
+        return fits ? candidate : CGPoint(x: center.x - right.x * distance, y: center.y - right.y * distance)
     }
 
     private var square: some View {

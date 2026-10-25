@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Testing
 @testable import CaptureCore
@@ -93,5 +94,81 @@ private let limits = ExposureLimits(isoRange: 32...3200, shutterRange: (1.0 / 16
 
     @Test func pointsOutsideTheFrameAreClamped() {
         #expect(FocusGeometry.devicePoint(fromFrame: CGPoint(x: -0.2, y: 1.3)) == CGPoint(x: 1, y: 1))
+    }
+}
+
+@Suite struct DeviceTiltTests {
+    /// Gravedad de un teléfono vertical girado `degrees` en sentido horario (sin mirar al piso).
+    private func tilt(_ degrees: Double, previous: DeviceTilt.Orientation = .portrait) -> DeviceTilt {
+        let radians = degrees * .pi / 180
+        return DeviceTilt.from(gravityX: sin(radians), y: -cos(radians), z: 0, previous: previous)
+    }
+
+    @Test func uprightIsLevel() {
+        let upright = tilt(0)
+        #expect(upright.orientation == .portrait && upright.isLevel && abs(upright.tilt) < 1e-9)
+    }
+
+    @Test func smallTurnsAreMeasured() {
+        #expect(abs(tilt(3).tilt - 3) < 1e-9)
+        #expect(abs(tilt(-2).tilt + 2) < 1e-9)
+        #expect(!tilt(3).isLevel)
+    }
+
+    @Test func landscapeBothWays() {
+        let clockwise = tilt(92)
+        #expect(clockwise.orientation == .landscapeClockwise)
+        #expect(abs(clockwise.tilt - 2) < 1e-9)
+        #expect(clockwise.orientation.uiRotation == -90)
+        #expect(tilt(-90).orientation == .landscapeCounterclockwise)
+        #expect(tilt(-90).isLevel)
+        #expect(tilt(180).orientation == .upsideDown)
+    }
+
+    @Test func doesNotFlickerAround45Degrees() {
+        // De vertical a 50°: sigue vertical (margen); a 60°, pasa a horizontal; y de vuelta a 40°, sigue.
+        #expect(tilt(50, previous: .portrait).orientation == .portrait)
+        #expect(tilt(60, previous: .portrait).orientation == .landscapeClockwise)
+        #expect(tilt(40, previous: .landscapeClockwise).orientation == .landscapeClockwise)
+    }
+
+    @Test func lyingFlatKeepsTheOrientationAndHidesTheLevel() {
+        let flat = DeviceTilt.from(gravityX: 0.1, y: -0.1, z: -0.99, previous: .landscapeClockwise)
+        #expect(flat.isFlat && !flat.isLevel)
+        #expect(flat.orientation == .landscapeClockwise)
+    }
+}
+
+@Suite struct CaptureOrientationTests {
+    @Test func photoIsRotatedToStayUpright() {
+        #expect(DeviceTilt.Orientation.portrait.captureRotationAngle == 90)
+        #expect(DeviceTilt.Orientation.landscapeCounterclockwise.captureRotationAngle == 0)
+        #expect(DeviceTilt.Orientation.landscapeClockwise.captureRotationAngle == 180)
+        #expect(DeviceTilt.Orientation.upsideDown.captureRotationAngle == 270)
+    }
+
+    @Test func viewfinderPointsLandInThePhoto() {
+        let topLeft = CGPoint(x: 0, y: 0)
+        // Vertical: igual. Girado a la izquierda: la arriba-izquierda del visor queda abajo a la izquierda
+        // de la foto apaisada; girado a la derecha, arriba a la derecha.
+        #expect(DeviceTilt.Orientation.portrait.photoPoint(fromFrame: topLeft) == topLeft)
+        #expect(DeviceTilt.Orientation.landscapeCounterclockwise.photoPoint(fromFrame: topLeft) == CGPoint(x: 0, y: 1))
+        #expect(DeviceTilt.Orientation.landscapeClockwise.photoPoint(fromFrame: topLeft) == CGPoint(x: 1, y: 0))
+        #expect(DeviceTilt.Orientation.upsideDown.photoPoint(fromFrame: topLeft) == CGPoint(x: 1, y: 1))
+        // El centro siempre es el centro; girar a la izquierda y después a la derecha vuelve al punto.
+        for orientation in DeviceTilt.Orientation.allCases {
+            #expect(orientation.photoPoint(fromFrame: CGPoint(x: 0.5, y: 0.5)) == CGPoint(x: 0.5, y: 0.5))
+        }
+        let p = CGPoint(x: 0.25, y: 0.75)
+        let ccw = DeviceTilt.Orientation.landscapeCounterclockwise, cw = DeviceTilt.Orientation.landscapeClockwise
+        #expect(cw.photoPoint(fromFrame: ccw.photoPoint(fromFrame: p)) == p)
+    }
+
+    @Test func counterclockwiseMatchesTheSensor() {
+        // Girado a la izquierda la foto es el sensor tal cual: coincide con el punto que se le pide al
+        // foco de la cámara.
+        let p = CGPoint(x: 0.3, y: 0.8)
+        #expect(DeviceTilt.Orientation.landscapeCounterclockwise.photoPoint(fromFrame: p)
+                == FocusGeometry.devicePoint(fromFrame: p))
     }
 }
