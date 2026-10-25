@@ -1,4 +1,6 @@
+import AVFoundation
 import CoreGraphics
+import CoreVideo
 import ImageIO
 import Foundation
 import Metal
@@ -820,6 +822,17 @@ private let hasMetal = MTLCreateSystemDefaultDevice() != nil
         #expect(Bokeh(fNumber: 11).roundness == 0)
     }
 
+    @Test func depthBlurFollowsRealLensOptics() {
+        // 24 mm a f/1.4: diámetro en el sensor 24² × 1 / 1,4 = 0,41 mm por dioptría → radio 0,86 % de 24 mm.
+        let wide = Bokeh(fNumber: 1.4).depthRadiusPerDiopter(shortSide: 3000, focalLength: 24, lensFocalLength: 24)
+        #expect(abs(wide - 3000 * 0.0085714) < 0.1)
+        // Recortar a 50 mm agranda el desenfoque en 50/24; cerrar a f/2.8 lo achica a la mitad.
+        let portrait = Bokeh(fNumber: 1.4).depthRadiusPerDiopter(shortSide: 3000, focalLength: 50, lensFocalLength: 24)
+        #expect(abs(portrait / wide - 50.0 / 24) < 1e-4)
+        let closed = Bokeh(fNumber: 2.8).depthRadiusPerDiopter(shortSide: 3000, focalLength: 24, lensFocalLength: 24)
+        #expect(abs(closed / wide - 0.5) < 1e-4)
+    }
+
     @Test func visibleOnlyWhenTheBlurShows() {
         #expect(Bokeh(fNumber: 1.4).isVisible(shortSide: 1440))
         #expect(!Bokeh(fNumber: 16).isVisible(shortSide: 300))
@@ -1023,5 +1036,181 @@ private let hasMetal = MTLCreateSystemDefaultDevice() != nil
         #expect(same === image)
         let blurred = try renderer.applyBokeh(Bokeh(fNumber: 1.4), to: image, matte: leftHalfPerson, orientation: 1)
         #expect(blurred.width == width && blurred.height == height)
+    }
+}
+
+/// Mapa de profundidad de prueba: `near` (1/m) a la izquierda de `split` (0…1), `far` a la derecha.
+private func halves(width: Int = 40, height: Int = 30, split: Float = 0.5, near: Float = 1, far: Float = 0.1,
+                    absolute: Bool = true) -> DepthMap {
+    DepthMap(width: width, height: height,
+             disparity: (0..<(width * height)).map { Float($0 % width) / Float(width) < split ? near : far },
+             isAbsolute: absolute)
+}
+
+@Suite struct DepthMapTests {
+    @Test func focusOnTheTappedPoint() {
+        let depth = halves()
+        #expect(depth.focus(for: Bokeh(fNumber: 2, focus: .init(x: 0.2, y: 0.5)), matte: nil).disparity == 1)
+        #expect(depth.focus(for: Bokeh(fNumber: 2, focus: .init(x: 0.8, y: 0.5)), matte: nil).disparity == 0.1)
+    }
+
+    @Test func withoutATapThePersonIsInFocus() {
+        // La persona está a la derecha (lejos): el foco va ahí aunque el centro esté en el borde.
+        let depth = halves()
+        let matte = PersonMatte(width: 10, height: 10, pixels: (0..<100).map { $0 % 10 >= 7 ? 255 : 0 })
+        let focus = depth.focus(for: Bokeh(fNumber: 2), matte: matte)
+        #expect(focus.disparity == 0.1)
+        #expect(focus.personInFocus)
+        // Tocar fuera de la persona la saca de foco.
+        #expect(!depth.focus(for: Bokeh(fNumber: 2, focus: .init(x: 0.1, y: 0.5)), matte: matte).personInFocus)
+    }
+
+    @Test func measuredMapsKeepTheirScaleAndRelativeOnesAreStretched() {
+        #expect(halves().focus(for: Bokeh(fNumber: 2), matte: nil).scale == 1)
+        let relative = halves(near: 3, far: 1, absolute: false)
+        #expect(abs(relative.focus(for: Bokeh(fNumber: 2), matte: nil).scale - 0.5) < 1e-5)
+    }
+
+    @Test func loadsTheMapFromAPhotoAndTurnsItUpright() throws {
+        // Foto guardada apaisada (8×4) con orientación 6; el mapa, también apaisado: cerca a la izquierda.
+        let width = 8, height = 4
+        let values = (0..<(width * height)).map { $0 % width < 4 ? Float(1) : Float(0.1) }
+        let description: [CFString: Any] = [
+            kCGImagePropertyWidth: width, kCGImagePropertyHeight: height, kCGImagePropertyBytesPerRow: width * 4,
+            kCGImagePropertyPixelFormat: kCVPixelFormatType_DisparityFloat32,
+        ]
+        let info: [CFString: Any] = [
+            kCGImageAuxiliaryDataInfoData: values.withUnsafeBytes { Data($0) },
+            kCGImageAuxiliaryDataInfoDataDescription: description,
+            kCGImageAuxiliaryDataInfoMetadata: CGImageMetadataCreateMutable(),
+        ]
+        let context = try #require(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                                             bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                             bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        let image = try #require(context.makeImage())
+        let data = NSMutableData()
+        let destination = try #require(CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, [kCGImagePropertyOrientation: 6] as CFDictionary)
+        CGImageDestinationAddAuxiliaryDataInfo(destination, kCGImageAuxiliaryDataTypeDisparity, info as CFDictionary)
+        #expect(CGImageDestinationFinalize(destination))
+
+        let depth = try #require(DepthMap.load(fromPhoto: data as Data))
+        // Derecho: 4 de ancho y 8 de alto; la izquierda guardada (cerca) queda arriba.
+        #expect(depth.width == 4 && depth.height == 8)
+        #expect(abs(depth.disparity[1 * 4 + 1] - 1) < 1e-4)
+        #expect(abs(depth.disparity[6 * 4 + 1] - 0.1) < 1e-4)
+        #expect(DepthMap.load(fromPhoto: Data(image.dataProvider.map { $0.data! as Data } ?? Data())) == nil)
+    }
+}
+
+@Suite(.enabled(if: hasMetal, "No hay dispositivo Metal")) struct DepthBokehPipelineTests {
+    let renderer: LookRenderer
+    let width = 400, height = 300
+
+    init() throws {
+        renderer = try LookRenderer()
+    }
+
+    private func image(_ color: (Int, Int) -> (UInt8, UInt8, UInt8)) -> [UInt8] {
+        var pixels = [UInt8](repeating: 255, count: width * height * 4)
+        for y in 0..<height {
+            for x in 0..<width {
+                let (r, g, b) = color(x, y)
+                let i = (y * width + x) * 4
+                pixels[i] = r
+                pixels[i + 1] = g
+                pixels[i + 2] = b
+            }
+        }
+        return pixels
+    }
+
+    private var stripes: [UInt8] {
+        image { x, _ in x % 2 == 0 ? (0, 0, 0) : (255, 255, 255) }
+    }
+
+    /// En 400×300 un 24 mm casi no desenfoca: los tests simulan un tele de 200 mm (unos 21 px por
+    /// dioptría a f/1.4).
+    private func render(_ pixels: [UInt8], depth: DepthMap, focus: Bokeh.FocusPoint?, matte: PersonMatte? = nil,
+                        quality: BokehQuality = .photo, focalLength: Double = 200) throws -> [UInt8] {
+        let bokeh = Bokeh(fNumber: 1.4, focus: focus)
+        let source = try renderer.makeTexture(rgba8: pixels, width: width, height: height)
+        let target = try renderer.makeRenderTarget(width: width, height: height)
+        let commandBuffer = try #require(renderer.commandQueue.makeCommandBuffer())
+        try renderer.encodeDepthBokeh(commandBuffer: commandBuffer, source: source, depth: renderer.makeTexture(depth: depth),
+                                      matte: try matte.map { try renderer.makeTexture(matte: $0) },
+                                      focus: depth.focus(for: bokeh, matte: matte), destination: target, bokeh: bokeh,
+                                      focalLength: focalLength, quality: quality)
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        return try renderer.readBytes(target)
+    }
+
+    private func channel(_ pixels: [UInt8], _ x: Int, _ y: Int, _ c: Int = 0) -> Int {
+        Int(pixels[(y * width + x) * 4 + c])
+    }
+
+    private func roughness(_ pixels: [UInt8], xs: Range<Int>, y: Int = 150) -> Int {
+        xs.dropLast().map { abs(channel(pixels, $0, y) - channel(pixels, $0 + 1, y)) }.max() ?? 0
+    }
+
+    @Test func backgroundBlursAndTheFocusedPlaneStaysSharp() throws {
+        // Cerca (1 m) a la izquierda, en foco; lejos (10 m) a la derecha.
+        let output = try render(stripes, depth: halves(), focus: .init(x: 0.2, y: 0.5))
+        #expect(roughness(output, xs: 10..<170) == 255)
+        #expect(roughness(output, xs: 240..<390) < 20)
+    }
+
+    @Test func foregroundBlursWhenFocusingFar() throws {
+        // Enfocando lo lejano, lo cercano (izquierda) se desenfoca y lo lejano queda nítido.
+        let output = try render(stripes, depth: halves(), focus: .init(x: 0.8, y: 0.5))
+        #expect(roughness(output, xs: 10..<160) < 20)
+        #expect(roughness(output, xs: 240..<390) == 255)
+    }
+
+    @Test func blurGrowsWithDistanceFromTheFocus() throws {
+        // Mismo fondo a 2 m (0,5) y a 10 m (0,1) con el foco a 1 m: el de 10 m queda más suave. Rayas
+        // anchas (24 px), para que el desenfoque menor no las borre del todo.
+        let wide = image { x, _ in (x / 24) % 2 == 0 ? (0, 0, 0) : (255, 255, 255) }
+        let mid = try render(wide, depth: halves(split: 0.5, near: 1, far: 0.5), focus: .init(x: 0.2, y: 0.5))
+        let far = try render(wide, depth: halves(split: 0.5, near: 1, far: 0.1), focus: .init(x: 0.2, y: 0.5))
+        let contrast = { (p: [UInt8]) -> Int in
+            let values = (260..<380).map { self.channel(p, $0, 150) }
+            return values.max()! - values.min()!
+        }
+        #expect(contrast(far) < contrast(mid))
+    }
+
+    @Test func sharpSubjectDoesNotBleedIntoTheBlurredBackground() throws {
+        // Objeto rojo cerca y en foco, fondo gris lejos: al lado del borde, el fondo sigue gris.
+        let input = image { x, _ in x < 200 ? (255, 0, 0) : (128, 128, 128) }
+        let output = try render(input, depth: halves(), focus: .init(x: 0.2, y: 0.5))
+        for x in [206, 230, 300] {
+            #expect(abs(channel(output, x, 150, 0) - 128) <= 3)
+            #expect(abs(channel(output, x, 150, 1) - 128) <= 3)
+        }
+        #expect(channel(output, 150, 150, 0) == 255 && channel(output, 150, 150, 1) == 0)
+    }
+
+    @Test func longerFocalLengthsBlurMore() throws {
+        let wide = try render(stripes, depth: halves(), focus: .init(x: 0.2, y: 0.5), focalLength: 50)
+        let tele = try render(stripes, depth: halves(), focus: .init(x: 0.2, y: 0.5), focalLength: 200)
+        #expect(roughness(tele, xs: 260..<380) < roughness(wide, xs: 260..<380))
+    }
+
+    @Test func flatSceneInFocusIsUntouched() throws {
+        let depth = DepthMap(width: 4, height: 3, disparity: Array(repeating: 0.5, count: 12), isAbsolute: true)
+        let input = stripes
+        let output = try render(input, depth: depth, focus: nil)
+        #expect(output == input)
+    }
+
+    @Test func previewMatchesThePhotoClosely() throws {
+        let input = image { x, _ in x < 200 ? (200, 60, 40) : (40, 90, 200) }
+        let photo = try render(input, depth: halves(), focus: .init(x: 0.2, y: 0.5))
+        let preview = try render(input, depth: halves(), focus: .init(x: 0.2, y: 0.5), quality: .preview)
+        for x in [100, 300, 380] {
+            #expect(abs(channel(photo, x, 150, 2) - channel(preview, x, 150, 2)) <= 6)
+        }
     }
 }

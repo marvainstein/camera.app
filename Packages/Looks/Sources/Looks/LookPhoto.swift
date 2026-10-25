@@ -40,8 +40,8 @@ extension LookRenderer {
     /// Con `framing` la foto se recorta al marco antes de aplicar el Look (así el viñeteo y el grano
     /// se miden sobre el recorte); `lensFocalLength` es la focal equivalente del lente que la sacó.
     ///
-    /// Con `bokeh`, antes de todo se desenfoca lo que no es una persona (la óptica va antes que la
-    /// película). Si no hay una persona, la foto queda nítida.
+    /// Con `bokeh`, antes de todo se desenfoca (la óptica va antes que la película): según la
+    /// profundidad, si la foto la trae; si no, lo que no es una persona (sin persona, queda nítida).
     public func renderPhoto(_ data: Data, lut: MTLTexture?, parameters: LookParameters,
                             framing: Framing = Framing(), lensFocalLength: Double = 24, bokeh: Bokeh? = nil,
                             outputType: UTType = .heic, quality: Double = 0.9) throws -> Data {
@@ -53,9 +53,17 @@ extension LookRenderer {
         properties[kCGImageDestinationLossyCompressionQuality] = quality
         let orientation = 1
 
-        if let bokeh, bokeh.isVisible(shortSide: min(image.width, image.height)),
-           let matte = PersonMatte.detect(inPhoto: data) {
-            image = try applyBokeh(bokeh, to: image, matte: matte, orientation: orientation)
+        if let bokeh, bokeh.isVisible(shortSide: min(image.width, image.height)) {
+            let matte = PersonMatte.detect(inPhoto: data)
+            if let depth = DepthMap.load(fromPhoto: data) {
+                // Con profundidad: todo se desenfoca según su distancia al plano de foco.
+                image = try applyDepthBokeh(bokeh, to: image, depth: depth, matte: matte,
+                                            focalLength: framing.focalLength ?? lensFocalLength,
+                                            lensFocalLength: lensFocalLength)
+            } else if let matte {
+                // Sin profundidad (fotos viejas): solo el fondo detrás de la persona.
+                image = try applyBokeh(bokeh, to: image, matte: matte, orientation: orientation)
+            }
         }
 
         if !framing.isFullFrame {

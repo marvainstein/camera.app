@@ -48,6 +48,11 @@ final class LiveMatte: @unchecked Sendable {
         }
     }
 
+    /// El último recorte (para saber si la persona está donde se enfoca).
+    var matte: PersonMatte? {
+        state.withLockUnchecked { $0.previous }
+    }
+
     /// Textura `.r8Unorm` del último recorte, derecha como los cuadros del visor. nil = sin persona.
     var texture: MTLTexture? {
         state.withLockUnchecked { $0.texture }

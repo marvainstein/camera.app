@@ -87,7 +87,7 @@ struct CameraScreen: View {
                 .allowsHitTesting(model.compareSplit != nil)
             }
             .overlay {
-                if model.canTapToFocus {
+                if model.showsFocusSquare {
                     FocusOverlay(model: model)
                 }
             }

@@ -126,27 +126,45 @@ final class CameraModel {
         didSet {
             guard settings != oldValue else { return }
             applySettings()
-            // P/A y el f-número cambian el bokeh del visor.
+            // P/A y el f-número cambian el bokeh del visor; P ↔ A, además, la cámara.
             if settings.program != oldValue.program { updatePreview() }
+            if Self.usesDepth(settings.program) != Self.usesDepth(oldValue.program) {
+                switchCamera(depth: Self.usesDepth(settings.program))
+            }
         }
     }
     /// Punto tocado para enfocar, 0…1 sobre el visor; nil = foco automático.
     private(set) var focusPoint: CGPoint?
-    /// Sube con cada toque y cada ajuste de brillo, para volver a encender el cuadrado (aunque se toque
-    /// el mismo lugar).
-    private(set) var focusTaps = 0
     /// Se está arrastrando el dedo para cambiar el brillo.
     private(set) var isAdjustingBrightness = false
+    /// El cuadrado del foco se ve: unos segundos después de tocar o de cambiar el brillo. El foco
+    /// sigue fijo aunque no se vea.
+    private(set) var isFocusSquareVisible = false
+    private var focusSquareTask: Task<Void, Never>?
+    private static let focusSquareDuration = Duration.seconds(2.5)
     private var brightnessDragStart: Float = 0
-    /// Último cambio de brillo: cambiar la exposición hace que la cámara crea que cambió la escena,
-    /// así que un rato después no se vuelve al foco automático.
-    private var lastBrightnessChange: ContinuousClock.Instant?
+    /// Ya se explicó cómo volver al foco automático (una vez por sesión).
+    private var didExplainFocusLock = false
     /// Puntos que hay que arrastrar el dedo (y que se mueve el sol) por cada paso de EV.
     static let pointsPerEV: CGFloat = 25
     /// Modo A: el f-número simulado desenfoca el fondo detrás de las personas al guardar la foto.
     var bokeh: Bokeh? {
-        if case .aperturePriority(let fNumber) = settings.program { Bokeh(fNumber: fNumber) } else { nil }
+        if case .aperturePriority(let fNumber) = settings.program {
+            Bokeh(fNumber: fNumber, focus: bokehFocus, capturedFocus: opticalFocus)
+        } else {
+            nil
+        }
     }
+    /// Lo que queda nítido en el bokeh: el punto tocado, en coordenadas 0…1 de la imagen entera y
+    /// derecha. nil = automático (la persona o el centro).
+    private(set) var bokehFocus: Bokeh.FocusPoint?
+    /// Dónde enfocó la lente (disparidad, 1/m) al sacar la foto que se guarda o se edita, si se sabe.
+    private var opticalFocus: Float?
+    /// Mapa de profundidad y recorte de persona de la foto abierta, para el bokeh del visor.
+    private var stillDepth: DepthMap?
+    private var stillPersonMatte: PersonMatte?
+    /// Ya se buscaron la profundidad y la persona de la foto abierta (estén o no).
+    private var isStillAnalyzed = false
 
     let preview: PreviewRenderer?
     private let camera = CameraController()
@@ -192,10 +210,8 @@ final class CameraModel {
         }
         do {
             camera.setFrameHandler { [preview] frame in preview.enqueue(frame) }
-            camera.setSubjectAreaChangeHandler { [weak self] in
-                Task { @MainActor in self?.resetFocus() }
-            }
-            capabilities = try await camera.configure()
+            camera.setDepthHandler { [liveDepth = preview.liveDepth] depth in liveDepth.process(depth) }
+            capabilities = try await camera.configure(depth: Self.usesDepth(settings.program))
             // Sin RAW en este iPhone: el mismo formato sin RAW.
             if capabilities?.isRAWSupported == false, settings.photoFormat.includesRAW {
                 settings.photoFormat = settings.photoFormat.withoutRAW
@@ -289,6 +305,12 @@ final class CameraModel {
     private func updatePreview() {
         preview?.contentMode = showsWholeFrame ? .aspectFit : .aspectFill
         preview?.bokeh = bokeh
+        preview?.liveDepth.bokeh = bokeh
+        preview?.liveDepth.isEnabled = bokeh != nil && photo == nil && status == .running
+            && capabilities?.hasDepth == true
+        preview?.lensFocalLength = lensFocalLength
+        preview?.focalLength = framing.focalLength ?? lensFocalLength
+        preview?.depthFocus = bokeh.flatMap { bokeh in stillDepth?.focus(for: bokeh, matte: stillPersonMatte) }
         // El recorte en vivo solo corre en modo A con la cámara (con una foto abierta se usa el suyo).
         preview?.liveMatte.isEnabled = bokeh != nil && photo == nil && status == .running
         let split = compareSplit ?? 0
@@ -472,6 +494,31 @@ final class CameraModel {
         }
     }
 
+    /// Modo A: cámara con profundidad (para el bokeh). Modo P: la principal sola, con ProRAW.
+    private static func usesDepth(_ program: ExposureProgram) -> Bool {
+        if case .aperturePriority = program { true } else { false }
+    }
+
+    /// Cambia de cámara al pasar de P a A (o al revés) y vuelve a aplicar la exposición.
+    private func switchCamera(depth: Bool) {
+        guard status == .running else { return }
+        focusPoint = nil
+        bokehFocus = nil
+        Task {
+            do {
+                let updated = try await camera.setDepthMode(depth)
+                capabilities = updated
+                updatePreview()
+                if !updated.isRAWSupported, settings.photoFormat.includesRAW {
+                    settings.photoFormat = settings.photoFormat.withoutRAW
+                }
+                applySettings()
+            } catch {
+                message = "No se pudo cambiar de cámara: \(error)"
+            }
+        }
+    }
+
     private func applySettings() {
         guard status == .running else { return }
         let settings = settings
@@ -491,6 +538,16 @@ final class CameraModel {
         status == .running && photo == nil && draft == nil && compareSplit == nil
     }
 
+    /// Editando una foto en modo A, tocarla elige qué queda nítido en el bokeh.
+    var canTapToChooseBokehFocus: Bool {
+        photo != nil && bokeh != nil && draft == nil && compareSplit == nil && stillDepth != nil
+    }
+
+    /// Se muestra el cuadrado del foco.
+    var showsFocusSquare: Bool {
+        canTapToFocus || canTapToChooseBokehFocus
+    }
+
     /// El brillo (compensación EV) solo se puede tocar con la exposición automática.
     var canAdjustBrightness: Bool {
         settings.iso == nil && settings.shutterSeconds == nil
@@ -502,12 +559,36 @@ final class CameraModel {
     }
 
     /// Enfoca y mide la luz donde se tocó. `point` va en puntos de la vista de tamaño `viewSize`.
+    /// En modo A, ese punto es también lo que queda nítido en el bokeh. Con una foto abierta, solo eso.
     func focus(atViewPoint point: CGPoint, viewSize: CGSize) {
-        guard canTapToFocus, viewSize.width > 0, viewSize.height > 0 else { return }
+        if photo != nil, draft == nil, compareSplit == nil, !canTapToChooseBokehFocus {
+            explainWhyBokehFocusIsUnavailable()
+            return
+        }
+        guard canTapToFocus || canTapToChooseBokehFocus, viewSize.width > 0, viewSize.height > 0 else { return }
         let normalized = CGPoint(x: point.x / viewSize.width, y: point.y / viewSize.height)
-        guard let framePoint = preview?.imagePoint(forViewPoint: normalized, viewSize: viewSize) else { return }
+        guard let framePoint = preview?.imagePoint(forViewPoint: normalized, viewSize: viewSize),
+              (0...1).contains(framePoint.x), (0...1).contains(framePoint.y)
+        else { return }
+        // Tocar el cuadrado (mientras se ve) vuelve al foco automático.
+        if isFocusSquareVisible, let current = focusPoint,
+           hypot((current.x - normalized.x) * viewSize.width, (current.y - normalized.y) * viewSize.height) < 44 {
+            clearFocus()
+            return
+        }
         focusPoint = normalized
-        focusTaps += 1
+        revealFocusSquare()
+        bokehFocus = Bokeh.FocusPoint(x: Float(framePoint.x), y: Float(framePoint.y))
+        if !didExplainFocusLock {
+            didExplainFocusLock = true
+            message = "Foco fijo ahí. Tocá el cuadrado para volver al automático"
+        }
+
+        updatePreview()
+        guard photo == nil else {
+            warnIfOutsideTheOpticalFocus()
+            return
+        }
         let devicePoint = FocusGeometry.devicePoint(fromFrame: framePoint)
         Task {
             do {
@@ -515,6 +596,25 @@ final class CameraModel {
             } catch {
                 message = "No se pudo enfocar: \(error)"
             }
+        }
+    }
+
+    /// Editando: si el plano elegido estaba lejos de donde enfocó la lente, ya salió borroso.
+    private func warnIfOutsideTheOpticalFocus() {
+        guard let opticalFocus, let chosen = preview?.depthFocus,
+              abs(chosen.disparity - opticalFocus) * chosen.scale > Bokeh.opticalFocusTolerance
+        else { return }
+        message = "Esa zona no estaba en foco cuando sacaste la foto: no va a quedar nítida"
+    }
+
+    /// Por qué tocar la foto abierta no elige qué queda nítido.
+    private func explainWhyBokehFocusIsUnavailable() {
+        if bokeh == nil {
+            message = "Pasá a modo A para elegir qué queda nítido"
+        } else if !isStillAnalyzed {
+            message = "Un momento: leyendo la profundidad de la foto"
+        } else {
+            message = "Esta foto no tiene profundidad: el desenfoque sigue a la persona"
         }
     }
 
@@ -529,7 +629,7 @@ final class CameraModel {
         guard let translation else {
             if isAdjustingBrightness {
                 isAdjustingBrightness = false
-                focusTaps += 1
+                revealFocusSquare()
             }
             return
         }
@@ -537,21 +637,36 @@ final class CameraModel {
         if !isAdjustingBrightness {
             isAdjustingBrightness = true
             brightnessDragStart = settings.exposureBias
+            isFocusSquareVisible = true
+            focusSquareTask?.cancel()
         }
         let range = exposureBiasRange
         let bias = min(max(brightnessDragStart - Float(translation / Self.pointsPerEV), range.lowerBound), range.upperBound)
         settings.exposureBias = (bias * 10).rounded() / 10
-        lastBrightnessChange = .now
     }
 
-    /// Vuelve al foco automático (la escena cambió después de tocar), salvo mientras se ajusta el brillo
-    /// o justo después: el cambio de exposición también cuenta como "cambio de escena".
-    func resetFocus() {
-        if isAdjustingBrightness { return }
-        if let lastBrightnessChange, ContinuousClock.now - lastBrightnessChange < .seconds(2) { return }
-        guard focusPoint != nil else { return }
+    /// Muestra el cuadrado del foco y lo esconde unos segundos después.
+    private func revealFocusSquare() {
+        isFocusSquareVisible = true
+        focusSquareTask?.cancel()
+        focusSquareTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.focusSquareDuration)
+            guard !Task.isCancelled, let self, !self.isAdjustingBrightness else { return }
+            self.isFocusSquareVisible = false
+        }
+    }
+
+    /// Vuelve al foco automático: la cámara enfoca sola y el bokeh enfoca la persona o el centro.
+    func clearFocus() {
+        guard focusPoint != nil || bokehFocus != nil else { return }
         focusPoint = nil
-        Task { try? await camera.resetFocus() }
+        bokehFocus = nil
+        focusSquareTask?.cancel()
+        isFocusSquareVisible = false
+        updatePreview()
+        if photo == nil {
+            Task { try? await camera.resetFocus() }
+        }
     }
 
     // MARK: - Foto de la fototeca
@@ -565,6 +680,13 @@ final class CameraModel {
             }.value
             preview?.still = loaded.texture
             preview?.stillMatte = nil
+            preview?.stillDepth = nil
+            stillDepth = nil
+            stillPersonMatte = nil
+            isStillAnalyzed = false
+            bokehFocus = nil
+            opticalFocus = nil
+            focusPoint = nil
             photo = data
             photoFocalLength = Framing.lensFocalLength(ofPhoto: data)
             message = nil
@@ -577,17 +699,24 @@ final class CameraModel {
 
     /// Recorte de la persona de la foto abierta, para ver el bokeh en el visor (con la calidad de la
     /// foto final: se calcula una sola vez).
+    /// También su mapa de profundidad, si lo tiene: con eso el visor muestra el bokeh por distancia.
     private func loadStillMatte(for data: Data) {
         guard let renderer = preview?.looks else { return }
         stillMatteTask?.cancel()
         stillMatteTask = Task {
             let loaded = await Task.detached(priority: .utility) {
-                PersonMatte.detect(inPhoto: data).flatMap { matte in
-                    (try? renderer.makeTexture(matte: matte)).map(LoadedTexture.init)
-                }
+                let matte = PersonMatte.detect(inPhoto: data)
+                let depth = DepthMap.load(fromPhoto: data)
+                return StillAnalysis(matte: matte, matteTexture: matte.flatMap { try? renderer.makeTexture(matte: $0) },
+                                     depth: depth, depthTexture: depth.flatMap { try? renderer.makeTexture(depth: $0) })
             }.value
             guard !Task.isCancelled, photo == data else { return }
-            preview?.stillMatte = loaded?.texture
+            stillPersonMatte = loaded.matte
+            stillDepth = loaded.depth
+            isStillAnalyzed = true
+            preview?.stillMatte = loaded.matteTexture
+            preview?.stillDepth = loaded.depthTexture
+            updatePreview()
         }
     }
 
@@ -629,6 +758,8 @@ final class CameraModel {
         framing = adjustment.framing
         // El modo de arriba (P o A y su f-número) muestra el bokeh que tiene la foto.
         settings.program = adjustment.bokeh.map { .aperturePriority(fNumber: $0.fNumber) } ?? .program
+        bokehFocus = adjustment.bokeh?.focus
+        opticalFocus = adjustment.bokeh?.capturedFocus
         updatePreview()
     }
 
@@ -639,6 +770,12 @@ final class CameraModel {
         stillMatteTask?.cancel()
         preview?.still = nil
         preview?.stillMatte = nil
+        preview?.stillDepth = nil
+        stillDepth = nil
+        stillPersonMatte = nil
+        bokehFocus = nil
+        opticalFocus = nil
+        focusPoint = nil
         updatePreview()
     }
 
@@ -705,6 +842,13 @@ final class CameraModel {
         defer { isCapturing = false }
         do {
             let photo = try await camera.capturePhoto(settings: settings)
+            // Con un punto tocado, la lente enfocó ahí: se guarda su distancia para avisar al editar.
+            if let tapped = bokeh, tapped.focus != nil, let processed = photo.processed {
+                opticalFocus = await Task.detached(priority: .userInitiated) {
+                    DepthMap.load(fromPhoto: processed)?.focus(for: tapped, matte: nil).disparity
+                }.value
+            }
+            defer { opticalFocus = nil }
             // Sin LUT cargado todavía, igual se recorta al marco (y en modo A, se desenfoca el fondo). La
             // versión con el Look va en JPEG (es lo que acepta una edición de Fotos); el original queda en
             // el formato elegido.
@@ -723,6 +867,15 @@ final class CameraModel {
             message = "Error al capturar: \(error)"
         }
     }
+}
+
+/// Lo que se calcula de una foto abierta para su bokeh en el visor. `MTLTexture` es inmutable una vez
+/// subida y Metal es seguro entre hilos.
+private struct StillAnalysis: @unchecked Sendable {
+    let matte: PersonMatte?
+    let matteTexture: MTLTexture?
+    let depth: DepthMap?
+    let depthTexture: MTLTexture?
 }
 
 /// Textura recién subida desde una tarea de fondo. `MTLTexture` es inmutable una vez
