@@ -22,10 +22,14 @@ jobs:
     env:
       ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
       ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
-      ARCHIVE: ${{ runner.temp }}/CameraApp.xcarchive
-      KEY_PATH: ${{ runner.temp }}/AuthKey.p8
     steps:
       - uses: actions/checkout@v5
+      # `runner.temp` no existe a nivel del job (GitHub rechaza el archivo entero y el botón no
+      # aparece): las rutas se arman acá, con la carpeta temporal del runner.
+      - name: Rutas
+        run: |
+          echo "ARCHIVE=$RUNNER_TEMP/CameraApp.xcarchive" >> "$GITHUB_ENV"
+          echo "KEY_PATH=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
       - name: Versión de Xcode
         run: xcodebuild -version
       - name: Clave de App Store Connect
