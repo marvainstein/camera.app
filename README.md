@@ -290,3 +290,8 @@ redondeo de float16.
   docs/04 todavía no están.
 - Captura en un iPhone real no verificada todavía (solo simulador).
 - Halation y bloom (resto de Effects en docs/04) todavía no están.
+
+### Créditos
+
+- Foto de muestra de las miniaturas de Looks (`App/Assets.xcassets/Muestra.imageset`): Arlet Padrón
+  Benítez, en [Unsplash](https://unsplash.com/photos/CdKRiqTserM) (licencia de Unsplash).

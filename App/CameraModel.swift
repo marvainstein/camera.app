@@ -62,6 +62,12 @@ final class CameraModel {
     private(set) var status = Status.starting
     /// Looks incluidos y, después, las recetas propias.
     private(set) var looks: [Look] = []
+    /// Miniaturas, favoritos y color / blanco y negro, para el selector.
+    let gallery = LookGallery()
+    /// Los Looks en el orden del selector: Natural, los favoritos y el resto.
+    var arrangedLooks: [Look] {
+        LookOrder.arranged(looks, favorites: gallery.favorites)
+    }
     private var bundledLooks: [Look] = []
     private(set) var userLooks: [Look] = []
     private(set) var capabilities: CameraCapabilities?
@@ -247,6 +253,9 @@ final class CameraModel {
         let bundledIDs = Set(bundledLooks.map(\.id))
         looks = bundledLooks.map { look in userLooks.first { $0.id == look.id } ?? look }
             + userLooks.filter { !bundledIDs.contains($0.id) }
+        if let renderer = preview?.looks {
+            gallery.update(looks: looks, renderer: renderer)
+        }
     }
 
     func select(_ look: Look) {
