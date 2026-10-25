@@ -1,6 +1,7 @@
 import CaptureCore
 import CoreGraphics
 import Foundation
+import ImageIO
 import Looks
 import Metal
 import Observation
@@ -72,6 +73,10 @@ final class CameraModel {
     private(set) var userLooks: [Look] = []
     private(set) var capabilities: CameraCapabilities?
     private(set) var isCapturing = false
+    /// Sube con cada disparo (también al guardar una edición): el destello y la vibración lo siguen.
+    private(set) var shutterCount = 0
+    /// Miniatura de la última foto guardada, para el botón de la fototeca.
+    private(set) var lastPhotoThumbnail: CGImage?
     /// Aviso que se muestra unos segundos y se va solo.
     private(set) var message: String? {
         didSet {
@@ -810,10 +815,12 @@ final class CameraModel {
         }
         isCapturing = true
         defer { isCapturing = false }
+        shutterCount += 1
         do {
             let rendered = try await Task.detached(priority: .userInitiated) {
                 try job.render(data)
             }.value
+            lastPhotoThumbnail = Self.thumbnail(of: rendered)
             if let editingPhoto {
                 try await PhotoLibrary.saveEdit(of: editingPhoto, rendered: rendered, adjustment: currentAdjustment(),
                                                 format: Self.adjustmentFormat)
@@ -827,6 +834,17 @@ final class CameraModel {
         } catch {
             message = "No se pudo guardar: \(error)"
         }
+    }
+
+    /// Miniatura (derecha, 168 px de lado largo) de una foto para el botón de la fototeca.
+    private static func thumbnail(of data: Data) -> CGImage? {
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 168,
+        ]
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 
     /// Look, efectos, grano, recorte y bokeh actuales, para aplicarlos a una foto fuera del main actor.
@@ -849,6 +867,7 @@ final class CameraModel {
         guard status == .running, !isCapturing, preview != nil else { return }
         isCapturing = true
         defer { isCapturing = false }
+        shutterCount += 1
         do {
             let photo = try await camera.capturePhoto(settings: settings)
             // Con un punto tocado, la lente enfocó ahí: se guarda su distancia para avisar al editar.
@@ -868,8 +887,10 @@ final class CameraModel {
                 try await PhotoLibrary.saveEditable(original: processed, rendered: rendered,
                                                     adjustment: currentAdjustment(), format: Self.adjustmentFormat,
                                                     raw: photo.raw)
+                lastPhotoThumbnail = Self.thumbnail(of: rendered)
             } else {
                 try await PhotoLibrary.save(processed: photo.processed, raw: photo.raw)
+                lastPhotoThumbnail = photo.processed.flatMap(Self.thumbnail(of:)) ?? lastPhotoThumbnail
             }
             message = "Guardada (\(settings.photoFormat.rawValue))"
         } catch {

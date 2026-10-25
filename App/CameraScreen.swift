@@ -14,6 +14,8 @@ struct CameraScreen: View {
     @State private var showsLookBrowser = false
     /// La tarjeta con los datos del Look (unos segundos después de elegirlo).
     @State private var showsLookCard = false
+    /// Destello del disparo: el visor se oscurece y vuelve.
+    @State private var flashOpacity: Double = 0
 
     var body: some View {
         ZStack {
@@ -22,6 +24,11 @@ struct CameraScreen: View {
             if !model.showsWholeFrame, let preview = model.preview {
                 comparablePreview(preview).ignoresSafeArea()
             }
+            // Destello al disparar (sobre el visor, debajo de los controles).
+            Color.black
+                .opacity(flashOpacity)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
             VStack(spacing: 12) {
                 topBar
                 if model.showsWholeFrame, let preview = model.preview {
@@ -54,6 +61,12 @@ struct CameraScreen: View {
             .padding(.vertical, 8)
         }
         .task { await model.start() }
+        .onChange(of: model.shutterCount) {
+            // Oscurece de golpe y vuelve en un cuarto de segundo, como el obturador de la cámara de Apple.
+            flashOpacity = 0.9
+            withAnimation(.easeOut(duration: 0.25)) { flashOpacity = 0 }
+        }
+        .sensoryFeedback(.impact(weight: .light), trigger: model.shutterCount)
         .task(id: model.selectedLookID) {
             // Al elegir un Look (no al abrir la app), su tarjeta unos segundos.
             guard model.selectedLookID != nil, model.status == .running || model.photo != nil else { return }
@@ -341,10 +354,12 @@ struct CameraScreen: View {
                     }
                     .accessibilityLabel("Volver a la cámara")
                 } else {
+                    let label = LastPhotoLabel(thumbnail: model.lastPhotoThumbnail)
                     PhotosPicker(selection: $photoItem, matching: .images, photoLibrary: .shared()) {
-                        Image(systemName: "photo.on.rectangle")
+                        label
                     }
-                    .accessibilityLabel("Abrir una foto")
+                    .accessibilityLabel(model.lastPhotoThumbnail == nil ? "Abrir una foto"
+                                        : "Abrir una foto (la última que sacaste está acá)")
                 }
             }
             .font(.title2)
@@ -459,5 +474,30 @@ private struct ManualControls: View {
 
     static func format(shutter seconds: Double) -> String {
         seconds >= 1 ? "\(seconds.formatted()) s" : "1/\(Int((1 / seconds).rounded()))"
+    }
+}
+
+/// La última foto (si ya se sacó una) o el ícono de la fototeca; al llegar una foto nueva, un pequeño
+/// salto.
+private struct LastPhotoLabel: View, @unchecked Sendable {
+    let thumbnail: CGImage?
+
+    var body: some View {
+        if let thumbnail {
+            Image(decorative: thumbnail, scale: 1)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 56, height: 56)
+                .clipShape(Circle())
+                .overlay(Circle().strokeBorder(.white.opacity(0.6), lineWidth: 1.5))
+                .keyframeAnimator(initialValue: 1.0, trigger: thumbnail) { content, scale in
+                    content.scaleEffect(scale)
+                } keyframes: { _ in
+                    CubicKeyframe(1.18, duration: 0.12)
+                    SpringKeyframe(1.0, duration: 0.3)
+                }
+        } else {
+            Image(systemName: "photo.on.rectangle")
+        }
     }
 }
