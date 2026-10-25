@@ -152,6 +152,9 @@ public final class CameraController: NSObject, @unchecked Sendable {
         // Cada cambio de cámara puede cambiar lo que se puede; se vuelve a pedir todo.
         photoOutput.isDepthDataDeliveryEnabled = photoOutput.isDepthDataDeliverySupported
         photoOutput.isPortraitEffectsMatteDeliveryEnabled = photoOutput.isPortraitEffectsMatteDeliverySupported
+        // Recortes finos de pelo y anteojos, para los bordes del bokeh.
+        photoOutput.enabledSemanticSegmentationMatteTypes = photoOutput.availableSemanticSegmentationMatteTypes
+            .filter { [.hair, .glasses].contains($0) }
         photoOutput.isAppleProRAWEnabled = photoOutput.isAppleProRAWSupported
         // Profundidad también en vivo, para que el visor muestre el mismo bokeh que la foto.
         if photoOutput.isDepthDataDeliveryEnabled {
@@ -350,6 +353,10 @@ public final class CameraController: NSObject, @unchecked Sendable {
         if photoOutput.isPortraitEffectsMatteDeliveryEnabled {
             settings.isPortraitEffectsMatteDeliveryEnabled = true
             settings.embedsPortraitEffectsMatteInPhoto = true
+        }
+        if !photoOutput.enabledSemanticSegmentationMatteTypes.isEmpty {
+            settings.enabledSemanticSegmentationMatteTypes = photoOutput.enabledSemanticSegmentationMatteTypes
+            settings.embedsSemanticSegmentationMattesInPhoto = true
         }
     }
 }

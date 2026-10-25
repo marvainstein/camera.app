@@ -1198,6 +1198,35 @@ private func halves(width: Int = 40, height: Int = 30, split: Float = 0.5, near:
         #expect(roughness(tele, xs: 260..<380) < roughness(wide, xs: 260..<380))
     }
 
+    @Test func hairStrandsStaySharpAtFullResolution() throws {
+        // Persona cerca (izquierda) en foco; "mechones" de 1 px sobre el fondo lejano, marcados en el
+        // recorte. En la versión reducida se perderían: tienen que quedar idénticos a la foto.
+        let input = stripes
+        let strands = PersonMatte(width: width, height: height, pixels: (0..<(width * height)).map { i in
+            let x = i % width
+            return x < 200 || x % 10 == 0 ? 255 : 0
+        })
+        let output = try render(input, depth: halves(), focus: .init(x: 0.2, y: 0.5), matte: strands)
+        for x in stride(from: 230, to: 390, by: 10) {
+            #expect(channel(output, x, 150) == channel(input, x, 150))
+        }
+        #expect(roughness(output, xs: 241..<249) < 40)
+    }
+
+    @Test func edgesFollowTheImageNotTheDepthGrid() throws {
+        // Objeto rojo cerca (en foco) y fondo azul lejos, los dos con textura. El mapa de profundidad es
+        // 10 veces más chico que la imagen: interpolado, el borde sería una rampa de 10 px con
+        // distancias intermedias y el objeto se desenfocaría hasta unos 5 px antes de su borde.
+        let input = image { x, _ in
+            x < 200 ? (x % 2 == 0 ? (255, 70, 60) : (190, 40, 40)) : (x % 2 == 0 ? (60, 80, 170) : (30, 40, 110))
+        }
+        let output = try render(input, depth: halves(), focus: .init(x: 0.2, y: 0.5))
+        for x in 150..<198 {
+            #expect(channel(output, x, 150) == channel(input, x, 150))
+        }
+        #expect(roughness(output, xs: 230..<390) < 12)
+    }
+
     @Test func flatSceneInFocusIsUntouched() throws {
         let depth = DepthMap(width: 4, height: 3, disparity: Array(repeating: 0.5, count: 12), isAbsolute: true)
         let input = stripes
@@ -1242,5 +1271,64 @@ private func halves(width: Int = 40, height: Int = 30, split: Float = 0.5, near:
         let arranged = LookOrder.arranged(looks, favorites: ["sepia", "cine"])
         #expect(arranged.map(\.id) == ["natural", "cine", "sepia", "dorado", "plata"])
         #expect(LookOrder.arranged(looks, favorites: []).map(\.id) == looks.map(\.id))
+    }
+}
+
+/// Un recorte guardado como lo guarda el iPhone dentro de una foto (imagen auxiliar de 8 bits).
+private func matteAuxiliaryInfo(width: Int, height: Int, pixels: [UInt8]) -> [CFString: Any] {
+    [
+        kCGImageAuxiliaryDataInfoData: Data(pixels),
+        kCGImageAuxiliaryDataInfoDataDescription: [
+            kCGImagePropertyWidth: width, kCGImagePropertyHeight: height, kCGImagePropertyBytesPerRow: width,
+            kCGImagePropertyPixelFormat: kCVPixelFormatType_OneComponent8,
+        ] as [CFString: Any],
+        kCGImageAuxiliaryDataInfoMetadata: CGImageMetadataCreateMutable(),
+    ]
+}
+
+/// JPEG apaisado (8×4) con orientación 6 y los recortes que se pidan, guardados sin girar.
+private func photoWithMattes(_ mattes: [(CFString, [UInt8])]) throws -> Data {
+    let context = try #require(CGContext(data: nil, width: 8, height: 4, bitsPerComponent: 8, bytesPerRow: 32,
+                                         space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                         bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+    let data = NSMutableData()
+    let destination = try #require(CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil))
+    CGImageDestinationAddImage(destination, try #require(context.makeImage()), [kCGImagePropertyOrientation: 6] as CFDictionary)
+    for (type, pixels) in mattes {
+        CGImageDestinationAddAuxiliaryDataInfo(destination, type,
+                                               matteAuxiliaryInfo(width: 8, height: 4, pixels: pixels) as CFDictionary)
+    }
+    #expect(CGImageDestinationFinalize(destination))
+    return data as Data
+}
+
+@Suite struct AppleMatteTests {
+    @Test func usesThePortraitMatteSavedInThePhotoPlusHair() throws {
+        // Guardado apaisado: persona en la mitad izquierda (x < 4); pelo, un punto suelto en (6, 1).
+        let portrait = (0..<32).map { $0 % 8 < 4 ? UInt8(255) : 0 }
+        var hair = [UInt8](repeating: 0, count: 32)
+        hair[1 * 8 + 6] = 200
+        let data = try photoWithMattes([(kCGImageAuxiliaryDataTypePortraitEffectsMatte, portrait),
+                                        (kCGImageAuxiliaryDataTypeSemanticSegmentationHairMatte, hair)])
+        let matte = try #require(PersonMatte.load(fromPhoto: data))
+        // Derecho (4×8): la izquierda guardada queda arriba; el punto de pelo, abajo a la derecha.
+        #expect(matte.width == 4 && matte.height == 8)
+        // (El JPEG comprime los recortes con pérdida: unos pocos niveles de diferencia.)
+        #expect(matte.pixels[1 * 4 + 1] >= 250)
+        #expect(matte.pixels[6 * 4 + 1] <= 5)
+        // Orientación 6: (x, y) guardado → (alto − 1 − y, x) derecho.
+        #expect((190...210).contains(matte.pixels[6 * 4 + 2]))
+    }
+
+    @Test func withoutAPortraitMatteFallsBackToVision() throws {
+        let hair = [UInt8](repeating: 255, count: 32)
+        let data = try photoWithMattes([(kCGImageAuxiliaryDataTypeSemanticSegmentationHairMatte, hair)])
+        #expect(PersonMatte.load(fromPhoto: data) == nil)
+    }
+
+    @Test func combinesMattesOfDifferentSizes() {
+        let base = PersonMatte(width: 4, height: 2, pixels: [0, 0, 255, 0, 0, 0, 0, 0])
+        let detail = PersonMatte(width: 2, height: 1, pixels: [100, 0])
+        #expect(base.combined(with: [detail]).pixels == [100, 100, 255, 0, 100, 100, 0, 0])
     }
 }
