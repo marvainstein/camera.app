@@ -296,9 +296,15 @@ public final class CameraController: NSObject, @unchecked Sendable {
 
     // MARK: - Captura
 
-    public func capturePhoto(settings: CaptureSettings) async throws -> CapturedPhoto {
+    /// `rotationAngle`: cómo girar la foto para que salga derecha según cómo se sostiene el teléfono
+    /// (ver `DeviceTilt.Orientation.captureRotationAngle`); 90 = vertical.
+    public func capturePhoto(settings: CaptureSettings, rotationAngle: Double = 90) async throws -> CapturedPhoto {
         let (processed, raw) = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(Data?, Data?), Error>) in
             sessionQueue.async { [self, inFlight] in
+                if let connection = photoOutput.connection(with: .video),
+                   connection.isVideoRotationAngleSupported(CGFloat(rotationAngle)) {
+                    connection.videoRotationAngle = CGFloat(rotationAngle)
+                }
                 let photoSettings: AVCapturePhotoSettings
                 do {
                     photoSettings = try makePhotoSettings(for: settings.photoFormat)
