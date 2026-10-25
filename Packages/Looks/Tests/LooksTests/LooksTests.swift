@@ -1025,3 +1025,33 @@ private let hasMetal = MTLCreateSystemDefaultDevice() != nil
         #expect(blurred.width == width && blurred.height == height)
     }
 }
+
+@Suite struct LookCategoryTests {
+    @Test func bundledLooksAreSortedIntoColorAndMonochrome() throws {
+        let looks = try LookCatalog.bundled()
+        let mono = Set(looks.filter { LookCatalog.category(of: $0, userLUTDirectory: nil) == .monochrome }.map(\.id))
+        #expect(mono == ["plata-400", "bn-alto-contraste", "sepia"])
+    }
+
+    @Test func importedLUTsAreClassifiedByWhatTheyDo() {
+        #expect(!LUT3D.identity(size: 17).isMonochrome)
+        // Gris, sepia (tono fijo) y un filtro rojo (más brillo a los rojos, pero sin color): blanco y negro.
+        let gray = LUT3D(size: 17) { c in SIMD3(repeating: (c * SIMD3(0.2126, 0.7152, 0.0722)).sum()) }
+        let sepia = LUT3D(size: 17) { c in (c * SIMD3(0.2126, 0.7152, 0.0722)).sum() * SIMD3(1.07, 0.98, 0.82) }
+        let redFilter = LUT3D(size: 17) { c in SIMD3(repeating: min(1, 0.8 * c.x + 0.2 * c.y)) }
+        #expect(gray.isMonochrome && sepia.isMonochrome && redFilter.isMonochrome)
+        // Desaturado pero con color: sigue siendo color.
+        let faded = LUT3D(size: 17) { c in
+            let luma = (c * SIMD3(0.2126, 0.7152, 0.0722)).sum()
+            return SIMD3(repeating: luma) + (c - luma) * 0.3
+        }
+        #expect(!faded.isMonochrome)
+    }
+
+    @Test func favoritesComeRightAfterNatural() {
+        let looks = ["natural", "dorado", "cine", "plata", "sepia"].map { Look(id: $0, name: $0, recipe: .neutral) }
+        let arranged = LookOrder.arranged(looks, favorites: ["sepia", "cine"])
+        #expect(arranged.map(\.id) == ["natural", "cine", "sepia", "dorado", "plata"])
+        #expect(LookOrder.arranged(looks, favorites: []).map(\.id) == looks.map(\.id))
+    }
+}
