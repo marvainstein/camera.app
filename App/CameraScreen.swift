@@ -10,6 +10,10 @@ struct CameraScreen: View {
     @State private var showsManual = false
     @State private var photoItem: PhotosPickerItem?
     @State private var importsCube = false
+    /// Panel de Looks abierto.
+    @State private var showsLookBrowser = false
+    /// La tarjeta con los datos del Look (unos segundos después de elegirlo).
+    @State private var showsLookCard = false
 
     var body: some View {
         ZStack {
@@ -31,8 +35,17 @@ struct CameraScreen: View {
                     RecipeEditor(model: model)
                         .containerRelativeFrame(.vertical) { height, _ in height * 0.45 }
                 } else {
+                    if showsLookCard {
+                        LookInfoCard(model: model)
+                            .transition(.opacity)
+                    }
                     statusBanner
-                    lookPicker
+                    if showsLookBrowser {
+                        LookBrowser(model: model) { withAnimation(.snappy) { showsLookBrowser = false } }
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    } else {
+                        lookBar
+                    }
                     lookSliders
                     shutterRow
                 }
@@ -41,6 +54,13 @@ struct CameraScreen: View {
             .padding(.vertical, 8)
         }
         .task { await model.start() }
+        .task(id: model.selectedLookID) {
+            // Al elegir un Look (no al abrir la app), su tarjeta unos segundos.
+            guard model.selectedLookID != nil, model.status == .running || model.photo != nil else { return }
+            withAnimation { showsLookCard = true }
+            try? await Task.sleep(for: .seconds(2.5))
+            withAnimation { showsLookCard = false }
+        }
         .onChange(of: photoItem) { _, item in
             guard let item else { return }
             Task {
@@ -250,28 +270,34 @@ struct CameraScreen: View {
 
     // MARK: - Looks
 
-    private var lookPicker: some View {
+    /// La varita (recetas) a la izquierda y, a la derecha, el Look actual: al tocarlo se abre el panel.
+    private var lookBar: some View {
         HStack(spacing: 8) {
             recipeMenu
-            ScrollView(.horizontal, showsIndicators: false) {
+            Spacer()
+            Button {
+                withAnimation(.snappy) { showsLookBrowser = true }
+            } label: {
                 HStack(spacing: 8) {
-                    ForEach(model.looks) { look in
-                        Button {
-                            model.select(look)
-                        } label: {
-                            Label(look.name, systemImage: model.isModified(look) ? "pencil" : "person.fill")
-                                .labelStyle(UserLookLabelStyle(isUserLook: model.isUserLook(look) || model.isModified(look)))
-                        }
-                        .font(.callout)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .background(model.selectedLookID == look.id ? Color.white : Color.white.opacity(0.15),
-                                    in: Capsule())
-                        .foregroundStyle(model.selectedLookID == look.id ? Color.black : Color.white)
-                        .contextMenu { lookActions(look) }
+                    if let look = model.selectedLook, let image = model.gallery.thumbnail(for: look) {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: 28, height: 35)
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
                     }
+                    Text(model.selectedLook?.name ?? "Looks")
+                        .font(.callout.weight(.semibold))
+                        .lineLimit(1)
+                    Image(systemName: "chevron.up")
+                        .font(.caption.weight(.semibold))
                 }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color.white.opacity(0.15), in: Capsule())
             }
+            .foregroundStyle(.white)
+            .accessibilityLabel("Look: \(model.selectedLook?.name ?? "ninguno"). Ver todos")
         }
     }
 
@@ -280,7 +306,7 @@ struct CameraScreen: View {
         Menu {
             Button("Receta nueva", systemImage: "plus") { model.newRecipe() }
             if let look = model.selectedLook {
-                lookActions(look)
+                LookActions(model: model, look: look)
             }
             Button("Pegar receta", systemImage: "doc.on.clipboard") {
                 model.importRecipe(from: UIPasteboard.general.string ?? "")
@@ -292,26 +318,6 @@ struct CameraScreen: View {
                 .background(Color.white.opacity(0.15), in: Circle())
         }
         .accessibilityLabel("Recetas")
-    }
-
-    @ViewBuilder private func lookActions(_ look: Look) -> some View {
-        Button("Editar \(look.name)", systemImage: "slider.horizontal.3") {
-            model.select(look)
-            model.edit(look)
-        }
-        Button("Duplicar y editar", systemImage: "plus.square.on.square") {
-            model.select(look)
-            model.duplicate(look)
-        }
-        if let text = model.shareText(for: look) {
-            ShareLink("Compartir receta", item: text, preview: SharePreview(look.name))
-        }
-        if model.isModified(look) {
-            Button("Restaurar original", systemImage: "arrow.uturn.backward") { model.restoreOriginal(look) }
-        }
-        if model.isUserLook(look) {
-            Button("Borrar \(look.name)", systemImage: "trash", role: .destructive) { model.delete(look) }
-        }
     }
 
     private var lookSliders: some View {
@@ -374,18 +380,6 @@ struct CameraScreen: View {
         .disabled((model.status != .running && model.photo == nil) || model.isCapturing)
         .accessibilityLabel(model.photo == nil ? "Disparar"
                             : model.editingPhoto == nil ? "Guardar copia con el Look" : "Guardar cambios en la foto")
-    }
-}
-
-/// Las recetas propias llevan un iconito delante del nombre.
-private struct UserLookLabelStyle: LabelStyle {
-    let isUserLook: Bool
-
-    func makeBody(configuration: Configuration) -> some View {
-        HStack(spacing: 4) {
-            if isUserLook { configuration.icon.imageScale(.small) }
-            configuration.title
-        }
     }
 }
 
