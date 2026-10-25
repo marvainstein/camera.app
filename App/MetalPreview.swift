@@ -19,8 +19,15 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
     var bokeh: Bokeh?
     /// Recorte de la persona de la foto de la fototeca (derecho, como `still`).
     var stillMatte: MTLTexture?
-    /// Recorte de la persona en vivo, para la cámara.
+    /// Mapa de profundidad de la foto de la fototeca (derecho), si lo tiene, y dónde enfocar.
+    var stillDepth: MTLTexture?
+    var depthFocus: DepthMap.Focus?
+    /// Recorte de la persona y profundidad en vivo, para la cámara.
     let liveMatte: LiveMatte
+    let liveDepth: LiveDepth
+    /// Focal simulada (la del encuadre) y la del lente, para el desenfoque por profundidad.
+    var focalLength: Double = 24
+    var lensFocalLength: Double = 24
     private let bokehScratch = BokehScratch()
     /// Imagen con el bokeh, del tamaño de la fuente; se reutiliza cuadro a cuadro.
     private var bokehTarget: MTLTexture?
@@ -39,7 +46,9 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
         }
         self.looks = looks
         self.textureCache = cache
-        self.liveMatte = LiveMatte(renderer: looks)
+        let liveMatte = LiveMatte(renderer: looks)
+        self.liveMatte = liveMatte
+        self.liveDepth = LiveDepth(renderer: looks, liveMatte: liveMatte)
     }
 
     /// Se llama desde la cola de video de la cámara.
@@ -57,13 +66,27 @@ final class PreviewRenderer: NSObject, MTKViewDelegate {
     /// La fuente con el bokeh (versión liviana), o nil si no corresponde: modo P, sin persona o con
     /// un desenfoque que no se notaría.
     private func encodeBokeh(commandBuffer: MTLCommandBuffer, source: MTLTexture) throws -> MTLTexture? {
-        guard let bokeh, bokeh.isVisible(shortSide: min(source.width, source.height)),
-              let matte = still != nil ? stillMatte : liveMatte.texture
-        else { return nil }
+        guard let bokeh, bokeh.isVisible(shortSide: min(source.width, source.height)) else { return nil }
         if bokehTarget?.width != source.width || bokehTarget?.height != source.height {
             bokehTarget = try looks.makeRenderTarget(width: source.width, height: source.height)
         }
         guard let target = bokehTarget else { return nil }
+        // Con profundidad (la de la foto abierta o la de la cámara en vivo): desenfoque por distancia,
+        // como el que se va a guardar.
+        let depth: (texture: MTLTexture, focus: DepthMap.Focus, matte: MTLTexture?)? =
+            if still != nil {
+                stillDepth.flatMap { texture in depthFocus.map { (texture, $0, stillMatte) } }
+            } else {
+                liveDepth.frame.map { ($0.texture, $0.focus, liveMatte.texture) }
+            }
+        if let depth {
+            try looks.encodeDepthBokeh(commandBuffer: commandBuffer, source: source, depth: depth.texture,
+                                       matte: depth.matte, focus: depth.focus, destination: target, bokeh: bokeh,
+                                       focalLength: focalLength, lensFocalLength: lensFocalLength,
+                                       quality: .preview, scratch: bokehScratch)
+            return target
+        }
+        guard let matte = still != nil ? stillMatte : liveMatte.texture else { return nil }
         // La foto y los cuadros del visor ya están derechos, igual que sus recortes.
         try looks.encodeBokeh(commandBuffer: commandBuffer, source: source, matte: matte, destination: target,
                               bokeh: bokeh, orientation: 1, quality: .preview, scratch: bokehScratch)

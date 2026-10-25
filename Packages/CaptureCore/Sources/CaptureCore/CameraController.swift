@@ -1,5 +1,6 @@
 #if os(iOS)
 import AVFoundation
+
 import os
 
 public enum CameraError: Error, Equatable {
@@ -19,6 +20,8 @@ public struct CameraCapabilities: Sendable, Hashable {
     public var limits: ExposureLimits
     /// Focal equivalente en 35 mm del lente (por diagonal), para los recortes por focal.
     public var equivalentFocalLength: Double
+    /// Las fotos traen el mapa de profundidad (cámara combinada con LiDAR o doble).
+    public var hasDepth: Bool = false
 
     /// Focal equivalente (diagonal de 43,27 mm) de un sensor 4:3 con este campo de visión
     /// horizontal en grados: el ancho de un 4:3 con esa diagonal mide 34,6 mm.
@@ -42,11 +45,13 @@ public final class CameraController: NSObject, @unchecked Sendable {
     private let videoQueue = DispatchQueue(label: "capturecore.video", qos: .userInteractive)
     private let photoOutput = AVCapturePhotoOutput()
     private let videoOutput = AVCaptureVideoDataOutput()
+    /// Profundidad en vivo (cámara con LiDAR o doble), para el bokeh del visor.
+    private let depthOutput = AVCaptureDepthDataOutput()
+    private let depthQueue = DispatchQueue(label: "capturecore.depth", qos: .userInitiated)
+    private let depthHandler = OSAllocatedUnfairLock<(@Sendable (AVDepthData) -> Void)?>(initialState: nil)
     private var device: AVCaptureDevice?
     private let frameHandler = OSAllocatedUnfairLock<(@Sendable (CVPixelBuffer) -> Void)?>(initialState: nil)
     private let inFlight = OSAllocatedUnfairLock(initialState: [Int64: PhotoCaptureDelegate]())
-    private let subjectAreaHandler = OSAllocatedUnfairLock<(@Sendable () -> Void)?>(initialState: nil)
-    private var subjectAreaObserver: NSObjectProtocol?
 
     public override init() {
         super.init()
@@ -54,6 +59,21 @@ public final class CameraController: NSObject, @unchecked Sendable {
 
     public static var isCameraAvailable: Bool {
         AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) != nil
+    }
+
+    /// Cámaras que miden profundidad y en las que el zoom 1× es la principal (en la triple y la
+    /// doble gran angular, 1× es la ultra gran angular).
+    private static let depthCameraTypes: [AVCaptureDevice.DeviceType] = [.builtInLiDARDepthCamera, .builtInDualCamera]
+
+    /// Con `depth`, una cámara que mide profundidad (si el iPhone tiene); si no, la principal sola,
+    /// que es la que da ProRAW.
+    private static func backCamera(depth: Bool) -> AVCaptureDevice? {
+        if depth {
+            for type in depthCameraTypes {
+                if let device = AVCaptureDevice.default(type, for: .video, position: .back) { return device }
+            }
+        }
+        return AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
     }
 
     public static func requestAccess() async -> Bool {
@@ -69,10 +89,10 @@ public final class CameraController: NSObject, @unchecked Sendable {
         frameHandler.withLock { $0 = handler }
     }
 
-    /// Se llama (en cualquier hilo) cuando, después de enfocar con un toque, la escena cambió
-    /// bastante (se movió el teléfono): conviene volver al foco automático.
-    public func setSubjectAreaChangeHandler(_ handler: (@Sendable () -> Void)?) {
-        subjectAreaHandler.withLock { $0 = handler }
+    /// Se llama en una cola propia con cada mapa de profundidad en vivo (solo en modo A, con una cámara
+    /// que la mide). Puede venir apaisado: ver `AVDepthData.applyingExifOrientation`.
+    public func setDepthHandler(_ handler: (@Sendable (AVDepthData) -> Void)?) {
+        depthHandler.withLock { $0 = handler }
     }
 
     private func onSessionQueue<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T {
@@ -83,23 +103,17 @@ public final class CameraController: NSObject, @unchecked Sendable {
 
     // MARK: - Configuración
 
-    public func configure() async throws -> CameraCapabilities {
+    /// Arma la sesión. Con `depth` (modo A) usa una cámara que mide profundidad, para el bokeh; sin
+    /// `depth` (modo P), la principal sola, con ProRAW.
+    public func configure(depth: Bool = false) async throws -> CameraCapabilities {
         try await onSessionQueue { [self] in
-            guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else {
-                throw CameraError.noCamera
-            }
             session.beginConfiguration()
             defer { session.commitConfiguration() }
             session.sessionPreset = .photo
 
-            let input = try AVCaptureDeviceInput(device: device)
-            guard session.canAddInput(input) else { throw CameraError.configurationFailed("input") }
-            session.addInput(input)
-
             guard session.canAddOutput(photoOutput) else { throw CameraError.configurationFailed("photo output") }
             session.addOutput(photoOutput)
             photoOutput.maxPhotoQualityPrioritization = .quality
-            photoOutput.isAppleProRAWEnabled = photoOutput.isAppleProRAWSupported
 
             videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
             videoOutput.alwaysDiscardsLateVideoFrames = true
@@ -107,26 +121,71 @@ public final class CameraController: NSObject, @unchecked Sendable {
             guard session.canAddOutput(videoOutput) else { throw CameraError.configurationFailed("video output") }
             session.addOutput(videoOutput)
 
-            // UI fija en vertical: el preview y las fotos salen rotados 90°.
-            for connection in [videoOutput.connection(with: .video), photoOutput.connection(with: .video)] {
-                if let connection, connection.isVideoRotationAngleSupported(90) {
-                    connection.videoRotationAngle = 90
-                }
-            }
-
-            self.device = device
-            subjectAreaObserver = NotificationCenter.default.addObserver(
-                forName: AVCaptureDevice.subjectAreaDidChangeNotification, object: device, queue: nil
-            ) { [subjectAreaHandler] _ in
-                subjectAreaHandler.withLock { $0 }?()
-            }
-            return CameraCapabilities(
-                isProRAWSupported: photoOutput.isAppleProRAWEnabled,
-                isRAWSupported: !photoOutput.availableRawPhotoPixelFormatTypes.isEmpty,
-                limits: Self.limits(of: device),
-                equivalentFocalLength: CameraCapabilities.equivalentFocalLength(
-                    horizontalFieldOfView: Double(device.activeFormat.videoFieldOfView)))
+            return try attachCamera(depth: depth)
         }
+    }
+
+    /// Cambia de cámara: con profundidad (modo A) o la principal con ProRAW (modo P). El visor se
+    /// reconfigura (tarda un momento). Hay que volver a aplicar la exposición después.
+    public func setDepthMode(_ depth: Bool) async throws -> CameraCapabilities {
+        try await onSessionQueue { [self] in
+            session.beginConfiguration()
+            defer { session.commitConfiguration() }
+            return try attachCamera(depth: depth)
+        }
+    }
+
+    /// Pone la cámara de entrada (sacando la anterior) y ajusta las salidas. En `sessionQueue`, dentro
+    /// de `beginConfiguration`.
+    private func attachCamera(depth: Bool) throws -> CameraCapabilities {
+        guard let device = Self.backCamera(depth: depth) else { throw CameraError.noCamera }
+        if device != self.device {
+            for input in session.inputs {
+                session.removeInput(input)
+            }
+            let input = try AVCaptureDeviceInput(device: device)
+            guard session.canAddInput(input) else { throw CameraError.configurationFailed("input") }
+            session.addInput(input)
+        }
+
+        // Profundidad y recorte de retrato de Apple, guardados dentro del JPG/HEIC (para el bokeh).
+        // Cada cambio de cámara puede cambiar lo que se puede; se vuelve a pedir todo.
+        photoOutput.isDepthDataDeliveryEnabled = photoOutput.isDepthDataDeliverySupported
+        photoOutput.isPortraitEffectsMatteDeliveryEnabled = photoOutput.isPortraitEffectsMatteDeliverySupported
+        photoOutput.isAppleProRAWEnabled = photoOutput.isAppleProRAWSupported
+        // Profundidad también en vivo, para que el visor muestre el mismo bokeh que la foto.
+        if photoOutput.isDepthDataDeliveryEnabled {
+            if !session.outputs.contains(depthOutput), session.canAddOutput(depthOutput) {
+                session.addOutput(depthOutput)
+                depthOutput.isFilteringEnabled = true
+                depthOutput.alwaysDiscardsLateDepthData = true
+                depthOutput.setDelegate(self, callbackQueue: depthQueue)
+            }
+        } else if session.outputs.contains(depthOutput) {
+            session.removeOutput(depthOutput)
+        }
+        // La cámara combinada no tiene que pasar sola a otra (por ejemplo, al tele con poca luz).
+        if device.primaryConstituentDeviceSwitchingBehavior != .unsupported, (try? device.lockForConfiguration()) != nil {
+            device.setPrimaryConstituentDeviceSwitchingBehavior(.locked, restrictedSwitchingBehaviorConditions: [])
+            device.unlockForConfiguration()
+        }
+
+        // UI fija en vertical: el preview y las fotos salen rotados 90°.
+        for connection in [videoOutput.connection(with: .video), photoOutput.connection(with: .video),
+                           depthOutput.connection(with: .depthData)] {
+            if let connection, connection.isVideoRotationAngleSupported(90) {
+                connection.videoRotationAngle = 90
+            }
+        }
+
+        self.device = device
+        return CameraCapabilities(
+            isProRAWSupported: photoOutput.isAppleProRAWEnabled,
+            isRAWSupported: !photoOutput.availableRawPhotoPixelFormatTypes.isEmpty,
+            limits: Self.limits(of: device),
+            equivalentFocalLength: CameraCapabilities.equivalentFocalLength(
+                horizontalFieldOfView: Double(device.activeFormat.videoFieldOfView)),
+            hasDepth: photoOutput.isDepthDataDeliveryEnabled)
     }
 
     static func limits(of device: AVCaptureDevice) -> ExposureLimits {
@@ -194,8 +253,8 @@ public final class CameraController: NSObject, @unchecked Sendable {
     // MARK: - Foco por toque
 
     /// Enfoca y mide la luz en `point` (coordenadas del sensor, ver `FocusGeometry`). El foco queda
-    /// fijo ahí hasta que cambie la escena; con exposición manual (ISO u obturación fijos) solo se
-    /// mueve el foco.
+    /// fijo ahí hasta otro toque o `resetFocus()`; con exposición manual (ISO u obturación fijos) solo
+    /// se mueve el foco.
     public func focus(at point: CGPoint) async throws {
         try await onSessionQueue { [self] in
             guard let device else { throw CameraError.noCamera }
@@ -210,7 +269,6 @@ public final class CameraController: NSObject, @unchecked Sendable {
                 device.exposurePointOfInterest = point
                 device.exposureMode = .continuousAutoExposure
             }
-            device.isSubjectAreaChangeMonitoringEnabled = true
         }
     }
 
@@ -230,7 +288,6 @@ public final class CameraController: NSObject, @unchecked Sendable {
                 device.exposurePointOfInterest = center
                 device.exposureMode = .continuousAutoExposure
             }
-            device.isSubjectAreaChangeMonitoringEnabled = false
         }
     }
 
@@ -269,6 +326,7 @@ public final class CameraController: NSObject, @unchecked Sendable {
         guard format.includesRAW else {
             let settings = processed.map { AVCapturePhotoSettings(format: $0) } ?? AVCapturePhotoSettings()
             settings.photoQualityPrioritization = .quality
+            requestDepth(settings)
             return settings
         }
         // ProRAW si está; si no, el RAW del sensor (Bayer).
@@ -280,7 +338,26 @@ public final class CameraController: NSObject, @unchecked Sendable {
         let settings = AVCapturePhotoSettings(rawPixelFormatType: rawType, processedFormat: processed)
         // El RAW Bayer no admite el procesado de máxima calidad.
         settings.photoQualityPrioritization = proRAW == nil ? .speed : .quality
+        if processed != nil { requestDepth(settings) }
         return settings
+    }
+
+    /// Pide la profundidad (y el recorte de retrato) dentro de la foto procesada, si la cámara la da.
+    private func requestDepth(_ settings: AVCapturePhotoSettings) {
+        guard photoOutput.isDepthDataDeliveryEnabled else { return }
+        settings.isDepthDataDeliveryEnabled = true
+        settings.embedsDepthDataInPhoto = true
+        if photoOutput.isPortraitEffectsMatteDeliveryEnabled {
+            settings.isPortraitEffectsMatteDeliveryEnabled = true
+            settings.embedsPortraitEffectsMatteInPhoto = true
+        }
+    }
+}
+
+extension CameraController: AVCaptureDepthDataOutputDelegate {
+    public func depthDataOutput(_ output: AVCaptureDepthDataOutput, didOutput depthData: AVDepthData,
+                                timestamp: CMTime, connection: AVCaptureConnection) {
+        depthHandler.withLock { $0 }?(depthData)
     }
 }
 

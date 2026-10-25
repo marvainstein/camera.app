@@ -13,9 +13,32 @@ import Vision
 /// muestra las hojas, y que hacia los bordes del cuadro se recorta en "ojo de gato".
 public struct Bokeh: Codable, Sendable, Hashable {
     public var fNumber: Float
+    /// Punto que queda nítido (tocado en el visor), en coordenadas 0…1 de la foto derecha y entera
+    /// (sin el recorte por focal). nil = automático: la persona o, si no hay, el centro.
+    public var focus: FocusPoint?
+    /// Disparidad (1/m) donde enfocó la lente al sacar la foto, si se tocó para enfocar. Al editar, lo
+    /// que está muy lejos de ahí no puede quedar nítido (ya salió desenfocado).
+    public var capturedFocus: Float?
 
-    public init(fNumber: Float) {
+    public init(fNumber: Float, focus: FocusPoint? = nil, capturedFocus: Float? = nil) {
         self.fNumber = fNumber
+        self.focus = focus
+        self.capturedFocus = capturedFocus
+    }
+
+    /// Diferencia (en 1/m) a partir de la cual algo que estaba fuera del foco de la lente ya se ve
+    /// borroso en el iPhone: no se puede volver nítido al editar.
+    public static let opticalFocusTolerance: Float = 0.5
+
+    /// Un punto en coordenadas 0…1.
+    public struct FocusPoint: Codable, Sendable, Hashable {
+        public var x: Float
+        public var y: Float
+
+        public init(x: Float, y: Float) {
+            self.x = min(max(x, 0), 1)
+            self.y = min(max(y, 0), 1)
+        }
     }
 
     /// Radio de los discos a f/1.4, en fracción del lado corto de la foto.
@@ -28,6 +51,9 @@ public struct Bokeh: Codable, Sendable, Hashable {
     static let catEye: Float = 0.35
     /// Peso extra de las luces fuertes, para que formen discos brillantes.
     static let highlightGain: Float = 6
+    /// Con profundidad: hasta cuántas dioptrías (1/m) de diferencia con el foco crece el desenfoque
+    /// (por ejemplo, algo a 25 cm con el foco en el infinito); más allá queda igual.
+    static let depthMaxDiopters: Float = 4
 
     /// Radio de los discos en fracción del lado corto de la foto.
     public var radiusFraction: Float {
@@ -37,6 +63,15 @@ public struct Bokeh: Codable, Sendable, Hashable {
     /// Radio de los discos en píxeles, para una foto con ese lado corto.
     public func radius(shortSide: Int) -> Float {
         radiusFraction * Float(shortSide)
+    }
+
+    /// Con profundidad: radio del desenfoque, en píxeles de la foto entera (sin recortar), por cada
+    /// dioptría (1/m) de diferencia con el plano de foco. Es el de una lente real: en un sensor de
+    /// 35 mm el diámetro es f² · Δ / N, y simular una focal `focalLength` recortando una foto sacada a
+    /// `lensFocalLength` agranda todo en `focalLength / lensFocalLength`. Por ejemplo, 24 mm a f/1.4
+    /// da un 0,86 % del lado corto por dioptría, y 50 mm, más del doble.
+    public func depthRadiusPerDiopter(shortSide: Int, focalLength: Double, lensFocalLength: Double) -> Float {
+        Float(shortSide) * Float(focalLength) * Float(lensFocalLength) / (48_000 * max(fNumber, 1))
     }
 
     /// Si en una imagen con ese lado corto el desenfoque se nota (si no, no vale la pena aplicarlo).
@@ -54,6 +89,11 @@ public struct Bokeh: Codable, Sendable, Hashable {
     /// lento y no se distingue del hecho sobre una versión reducida).
     static func workScale(radius: Float, quality: BokehQuality = .photo) -> Float {
         min(1, quality.workRadius / max(radius, 1))
+    }
+
+    /// Con profundidad hay desenfoques de todos los tamaños: la versión reducida es más grande.
+    static func depthWorkScale(radius: Float, quality: BokehQuality) -> Float {
+        min(1, quality.depthWorkRadius / max(radius, 1))
     }
 }
 
@@ -80,12 +120,29 @@ public enum BokehQuality: Sendable {
         case .preview: 64
         }
     }
+
+    /// Con profundidad hacen falta más puntos: cada uno tiene su propio desenfoque.
+    var depthSampleCount: UInt32 {
+        switch self {
+        case .photo: 400
+        case .preview: 128
+        }
+    }
+
+    /// Radio máximo en la versión reducida, con profundidad.
+    var depthWorkRadius: Float {
+        switch self {
+        case .photo: 32
+        case .preview: 12
+        }
+    }
 }
 
 /// Texturas intermedias del bokeh, para no crearlas en cada cuadro del visor.
 public final class BokehScratch: @unchecked Sendable {
     var prepared: MTLTexture?
     var blurred: MTLTexture?
+    var coc: MTLTexture?
 
     public init() {}
 }
@@ -266,10 +323,13 @@ extension LookRenderer {
                             textures: [source, blurred, matte], target: destination, uniforms: &uniforms)
     }
 
-    /// `existing` si tiene ese tamaño; si no, una nueva.
-    private func workTexture(_ existing: MTLTexture?, width: Int, height: Int) throws -> MTLTexture {
-        if let existing, existing.width == width, existing.height == height { return existing }
-        return try makeRenderTarget(width: width, height: height, pixelFormat: .rgba16Float)
+    /// `existing` si tiene ese tamaño y formato; si no, una nueva.
+    func workTexture(_ existing: MTLTexture?, width: Int, height: Int,
+                     format: MTLPixelFormat = .rgba16Float) throws -> MTLTexture {
+        if let existing, existing.width == width, existing.height == height, existing.pixelFormat == format {
+            return existing
+        }
+        return try makeRenderTarget(width: width, height: height, pixelFormat: format)
     }
 
     private func encodeBokehPass(commandBuffer: MTLCommandBuffer, fragment: String, textures: [MTLTexture],

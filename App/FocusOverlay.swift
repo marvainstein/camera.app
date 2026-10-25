@@ -2,10 +2,10 @@ import SwiftUI
 
 /// Foco por toque, como en la cámara del iPhone: un cuadrado amarillo donde se tocó y, al lado, un sol
 /// que sube o baja con el brillo (arrastrar el dedo por el visor hacia arriba aclara). Solo dibuja: los
-/// toques y arrastres los recibe el visor (`MetalPreview`). Unos segundos después se atenúa.
+/// toques y arrastres los recibe el visor (`MetalPreview`). Unos segundos después desaparece; el foco
+/// sigue fijo.
 struct FocusOverlay: View {
     let model: CameraModel
-    @State private var isBright = true
 
     private static let squareSize: CGFloat = 76
 
@@ -24,16 +24,11 @@ struct FocusOverlay: View {
                             .position(x: sunX, y: center.y)
                     }
                 }
-                .opacity(isBright || model.isAdjustingBrightness ? 1 : 0.5)
-                .animation(.easeOut(duration: 0.3), value: isBright)
+                .opacity(model.isFocusSquareVisible || model.isAdjustingBrightness ? 1 : 0)
+                .animation(.easeOut(duration: 0.4), value: model.isFocusSquareVisible)
             }
         }
         .allowsHitTesting(false)
-        .task(id: model.focusTaps) {
-            isBright = true
-            try? await Task.sleep(for: .seconds(3))
-            if !Task.isCancelled { isBright = false }
-        }
     }
 
     private var square: some View {
