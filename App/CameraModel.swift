@@ -714,7 +714,7 @@ final class CameraModel {
         stillMatteTask?.cancel()
         stillMatteTask = Task {
             let loaded = await Task.detached(priority: .utility) {
-                let matte = PersonMatte.detect(inPhoto: data)
+                let matte = PersonMatte.best(inPhoto: data)
                 let depth = DepthMap.load(fromPhoto: data)
                 return StillAnalysis(matte: matte, matteTexture: matte.flatMap { try? renderer.makeTexture(matte: $0) },
                                      depth: depth, depthTexture: depth.flatMap { try? renderer.makeTexture(depth: $0) })

@@ -236,7 +236,8 @@ extension LookRenderer {
                             target: coc, uniforms: &uniforms)
         try encodeDepthPass(commandBuffer: commandBuffer, fragment: "depth_gather", textures: [prepared, coc],
                             target: blurred, uniforms: &uniforms)
-        try encodeDepthPass(commandBuffer: commandBuffer, fragment: "depth_composite", textures: [source, blurred, coc],
+        try encodeDepthPass(commandBuffer: commandBuffer, fragment: "depth_composite",
+                            textures: [source, blurred, coc, matte ?? coc, prepared],
                             target: destination, uniforms: &uniforms)
     }
 

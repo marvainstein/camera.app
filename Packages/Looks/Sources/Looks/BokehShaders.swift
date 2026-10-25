@@ -133,13 +133,17 @@ enum BokehShaders {
                                   texture2d<float> depth [[texture(1)]],
                                   sampler s [[sampler(0)]]) {
         float2 footprint = 1.0 / u.workSize;
+        float2 depthSize = float2(depth.get_width(), depth.get_height());
         float3 colors[16];
         float disparities[16];
         float farthest = 1e9;
         for (int k = 0; k < 16; k++) {
             float2 uv = in.uv + ((float2(k % 4, k / 4) + 0.5) / 4.0 - 0.5) * footprint;
-            colors[k] = bokeh_linear(source.sample(s, uv).rgb);
-            disparities[k] = depth.sample(s, uv).r;
+            float2 sourceSize = float2(source.get_width(), source.get_height());
+            colors[k] = bokeh_linear(source.read(uint2(clamp(uv * sourceSize, float2(0.0), sourceSize - 1.0))).rgb);
+            // El punto del mapa tal cual (sin interpolar: en un borde, interpolado daría una distancia
+            // intermedia y lo de adelante se colaría como si fuera de atrás).
+            disparities[k] = depth.read(uint2(clamp(uv * depthSize, float2(0.0), depthSize - 1.0))).r;
             farthest = min(farthest, disparities[k]);
         }
         float3 color = float3(0.0);
@@ -155,30 +159,36 @@ enum BokehShaders {
     }
 
     // 2. Desenfoque de cada punto (con signo: positivo = delante del foco). La profundidad viene en
-    //    baja resolución: se promedia con los vecinos de color parecido para que siga los bordes de la
-    //    imagen. Con la persona en foco, su recorte la deja nítida.
+    //    baja resolución: en vez de interpolarla (en un borde quedaría una distancia intermedia, ni
+    //    cerca ni lejos), cada punto toma la de los puntos del mapa cercanos cuyo color se parece al
+    //    suyo. Con la persona en foco, su recorte la deja nítida.
     fragment float4 depth_coc(VOut in [[stage_in]],
                               constant DepthUniforms &u [[buffer(0)]],
                               texture2d<float> depth [[texture(0)]],
                               texture2d<float> matte [[texture(1)]],
                               texture2d<float> prepared [[texture(2)]],
                               sampler s [[sampler(0)]]) {
-        float2 texel = 1.0 / u.workSize;
+        float2 depthSize = float2(depth.get_width(), depth.get_height());
+        float2 base = floor(in.uv * depthSize - 0.5);
         float4 pc = prepared.sample(s, in.uv);
-        float lc = sqrt(dot(pc.rgb / max(pc.a, 1e-5), kLuma));
+        float3 here = sqrt(pc.rgb / max(pc.a, 1e-5));
         float sum = 0.0;
         float weights = 0.0;
-        for (int j = -2; j <= 2; j++) {
-            for (int i = -2; i <= 2; i++) {
-                float2 uv = in.uv + float2(i, j) * texel * 2.0;
+        for (int j = -1; j <= 2; j++) {
+            for (int i = -1; i <= 2; i++) {
+                // Centro de un punto del mapa: su distancia tal cual, sin interpolar.
+                float2 uv = (base + float2(i, j) + 0.5) / depthSize;
+                float d = depth.sample(s, uv).r;
                 float4 p = prepared.sample(s, uv);
-                float l = sqrt(dot(p.rgb / max(p.a, 1e-5), kLuma));
-                float w = exp(-(l - lc) * (l - lc) / 0.01) * exp(-float(i * i + j * j) / 4.0);
-                sum += depth.sample(s, uv).r * w;
+                float3 there = sqrt(p.rgb / max(p.a, 1e-5));
+                float2 dist = uv * depthSize - in.uv * depthSize;
+                float w = d > 0.0 ? exp(-dot(here - there, here - there) / 0.01) * exp(-dot(dist, dist) / 2.0) + 1e-6
+                                  : 0.0;
+                sum += d * w;
                 weights += w;
             }
         }
-        float d = sum / max(weights, 1e-5);
+        float d = weights > 0.0 ? sum / weights : depth.sample(s, in.uv).r;
         if (u.hasMatte != 0) {
             d = mix(d, u.focusDisparity, matte.sample(s, in.uv).r);
         }
@@ -205,8 +215,10 @@ enum BokehShaders {
             float r = sqrt((float(k) + 0.5) / float(count));
             float a = float(k) * 2.39996323;
             float2 offset = r * u.maxRadius * float2(cos(a), sin(a));
-            float2 uv = in.uv + offset / u.workSize;
-            float sampleCoc = coc.sample(s, uv).r;
+            // Cada muestra, de un píxel exacto: interpolar entre algo nítido y su fondo daría un punto
+            // "a medio desenfocar" con los dos colores, que se derramaría sobre el fondo.
+            uint2 texel = uint2(clamp(in.uv * u.workSize + offset, float2(0.0), u.workSize - 1.0));
+            float sampleCoc = coc.read(texel).r;
             float size = abs(sampleCoc);
             if (sampleCoc < center) {
                 size = min(size, centerSize * 2.0);
@@ -221,7 +233,7 @@ enum BokehShaders {
                     continue;
                 }
             }
-            sum += prepared.sample(s, uv) * (cover / max(size * size, minArea));
+            sum += prepared.read(texel) * (cover / max(size * size, minArea));
         }
         if (sum.a <= 1e-6) {
             float4 own = prepared.sample(s, in.uv);
@@ -231,16 +243,60 @@ enum BokehShaders {
     }
 
     // 4. Lo que está en foco, de la foto a resolución completa; lo desenfocado, de la versión reducida.
+    //    El desenfoque de cada píxel sale de los vecinos reducidos de color parecido al suyo (la
+    //    profundidad es mucho más chica que la foto: así el borde sigue el contorno real del objeto y no
+    //    la grilla del mapa). Con la persona en foco, su recorte (con pelo y anteojos) se aplica acá, a
+    //    resolución completa: en la versión reducida los mechones se perderían.
     fragment float4 depth_composite(VOut in [[stage_in]],
                                     constant DepthUniforms &u [[buffer(0)]],
                                     texture2d<float> source [[texture(0)]],
                                     texture2d<float> blurred [[texture(1)]],
                                     texture2d<float> coc [[texture(2)]],
+                                    texture2d<float> matte [[texture(3)]],
+                                    texture2d<float> prepared [[texture(4)]],
                                     sampler s [[sampler(0)]]) {
         float3 photo = source.sample(s, in.uv).rgb;
-        float3 b = clamp(bokeh_encoded(blurred.sample(s, in.uv).rgb), 0.0, 1.0);
-        float size = abs(coc.sample(s, in.uv).r) / max(u.fullScale, 1e-5);
-        return float4(mix(photo, b, smoothstep(0.75, 2.0, size)), 1.0);
+        float2 texel = 1.0 / u.workSize;
+        float2 center = (floor(in.uv * u.workSize - 0.5) + 0.5) * texel;
+        float3 here = sqrt(bokeh_linear(photo));
+        // Cuánto desenfoque: de los vecinos de color parecido (con un piso, para que en zonas con
+        // textura, donde ninguno se parece, quede el promedio de alrededor).
+        float sizeSum = 0.0;
+        float weights = 0.0;
+        for (int j = -1; j <= 2; j++) {
+            for (int i = -1; i <= 2; i++) {
+                float2 uv = center + float2(i, j) * texel;
+                float4 p = prepared.sample(s, uv);
+                float3 there = sqrt(p.rgb / max(p.a, 1e-5));
+                float2 dist = (uv - in.uv) * u.workSize;
+                float w = (exp(-dot(here - there, here - there) / 0.05) + 0.01) * exp(-dot(dist, dist) / 2.0);
+                sizeSum += abs(coc.sample(s, uv).r) * w;
+                weights += w;
+            }
+        }
+        float size = sizeSum / weights;
+        // El color desenfocado: de los vecinos con un desenfoque parecido (interpolarlo sin más mezclaría
+        // el objeto en foco con el fondo junto al borde).
+        float3 blurSum = float3(0.0);
+        float blurWeights = 0.0;
+        float tolerance = 1.0 + 0.25 * size;
+        for (int j = -1; j <= 2; j++) {
+            for (int i = -1; i <= 2; i++) {
+                float2 uv = center + float2(i, j) * texel;
+                float2 dist = (uv - in.uv) * u.workSize;
+                float difference = (abs(coc.sample(s, uv).r) - size) / tolerance;
+                float w = exp(-difference * difference) * exp(-dot(dist, dist) / 0.5) + 1e-6;
+                blurSum += blurred.sample(s, uv).rgb * w;
+                blurWeights += w;
+            }
+        }
+        size /= max(u.fullScale, 1e-5);
+        float3 b = clamp(bokeh_encoded(blurSum / blurWeights), 0.0, 1.0);
+        float blur = smoothstep(0.75, 2.0, size);
+        if (u.hasMatte != 0) {
+            blur *= 1.0 - matte.sample(s, in.uv).r;
+        }
+        return float4(mix(photo, b, blur), 1.0);
     }
     """
 }

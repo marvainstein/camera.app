@@ -54,7 +54,7 @@ extension LookRenderer {
         let orientation = 1
 
         if let bokeh, bokeh.isVisible(shortSide: min(image.width, image.height)) {
-            let matte = PersonMatte.detect(inPhoto: data)
+            let matte = PersonMatte.best(inPhoto: data)
             if let depth = DepthMap.load(fromPhoto: data) {
                 // Con profundidad: todo se desenfoca según su distancia al plano de foco.
                 image = try applyDepthBokeh(bokeh, to: image, depth: depth, matte: matte,

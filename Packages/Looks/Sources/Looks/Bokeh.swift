@@ -1,3 +1,4 @@
+import AVFoundation
 import CoreGraphics
 import CoreVideo
 import Foundation
@@ -185,6 +186,62 @@ public struct PersonMatte: Sendable, Equatable {
               let upright = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
         else { return nil }
         return detect(in: upright)
+    }
+
+    /// El mejor recorte disponible de una foto: el que guardó el iPhone al sacarla (ver
+    /// `load(fromPhoto:)`) o, si no tiene, el de Vision.
+    public static func best(inPhoto data: Data) -> PersonMatte? {
+        load(fromPhoto: data) ?? detect(inPhoto: data)
+    }
+
+    /// Los recortes que guardó el iPhone dentro de la foto al sacarla: el de retrato (persona entera,
+    /// más fino que el de Vision) sumado a los de pelo y anteojos, que siguen los mechones y los
+    /// marcos. Derecho, del tamaño del de retrato. nil si la foto no tiene recorte de retrato.
+    public static func load(fromPhoto data: Data) -> PersonMatte? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        let raw = (properties?[kCGImagePropertyOrientation] as? NSNumber)?.uint32Value ?? 1
+        let orientation = CGImagePropertyOrientation(rawValue: raw) ?? .up
+        func info(_ type: CFString) -> [AnyHashable: Any]? {
+            CGImageSourceCopyAuxiliaryDataInfoAtIndex(source, 0, type) as? [AnyHashable: Any]
+        }
+        guard let portraitInfo = info(kCGImageAuxiliaryDataTypePortraitEffectsMatte),
+              var portrait = try? AVPortraitEffectsMatte(fromDictionaryRepresentation: portraitInfo)
+        else { return nil }
+        if orientation != .up { portrait = portrait.applyingExifOrientation(orientation) }
+        guard let base = PersonMatte(pixelBuffer: portrait.mattingImage) else { return nil }
+        let details = Self.detailTypes.compactMap { type -> PersonMatte? in
+            guard let detailInfo = info(type),
+                  var matte = try? AVSemanticSegmentationMatte(fromImageSourceAuxiliaryDataType: type,
+                                                               dictionaryRepresentation: detailInfo)
+            else { return nil }
+            if orientation != .up { matte = matte.applyingExifOrientation(orientation) }
+            return PersonMatte(pixelBuffer: matte.mattingImage)
+        }
+        let combined = base.combined(with: details)
+        return combined.coverage >= minimumCoverage ? combined : nil
+    }
+
+    /// Recortes finos que se suman al de retrato: lo que el recorte general suele perder en los bordes.
+    static var detailTypes: [CFString] {
+        [kCGImageAuxiliaryDataTypeSemanticSegmentationHairMatte, kCGImageAuxiliaryDataTypeSemanticSegmentationGlassesMatte]
+    }
+
+    /// El máximo de este recorte y los otros (que pueden tener otro tamaño), punto por punto, del
+    /// tamaño de este.
+    func combined(with others: [PersonMatte]) -> PersonMatte {
+        guard !others.isEmpty else { return self }
+        var pixels = self.pixels
+        for other in others {
+            for y in 0..<height {
+                let oy = min(other.height - 1, y * other.height / height)
+                for x in 0..<width {
+                    let ox = min(other.width - 1, x * other.width / width)
+                    pixels[y * width + x] = max(pixels[y * width + x], other.pixels[oy * other.width + ox])
+                }
+            }
+        }
+        return PersonMatte(width: width, height: height, pixels: pixels)
     }
 
     /// Recorte de la persona de una imagen derecha. nil si no hay una persona o si Vision no pudo.
