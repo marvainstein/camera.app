@@ -61,6 +61,13 @@ struct LookBrowser: View {
                     if let id = model.selectedLookID { proxy.scrollTo(id, anchor: .center) }
                 }
             }
+
+            // Intensidad y grano del Look elegido.
+            VStack(spacing: 4) {
+                LabeledSlider(title: "Intensidad", value: Bindable(model).intensity)
+                LabeledSlider(title: "Grano", value: Bindable(model).grain)
+            }
+            .padding(.top, 2)
         }
         .padding(12)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))

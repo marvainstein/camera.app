@@ -22,6 +22,8 @@ public struct CameraCapabilities: Sendable, Hashable {
     public var equivalentFocalLength: Double
     /// Las fotos traen el mapa de profundidad (cámara combinada con LiDAR o doble).
     public var hasDepth: Bool = false
+    /// La cámara tiene flash.
+    public var hasFlash: Bool = false
 
     /// Focal equivalente (diagonal de 43,27 mm) de un sensor 4:3 con este campo de visión
     /// horizontal en grados: el ancho de un 4:3 con esa diagonal mide 34,6 mm.
@@ -188,7 +190,8 @@ public final class CameraController: NSObject, @unchecked Sendable {
             limits: Self.limits(of: device),
             equivalentFocalLength: CameraCapabilities.equivalentFocalLength(
                 horizontalFieldOfView: Double(device.activeFormat.videoFieldOfView)),
-            hasDepth: photoOutput.isDepthDataDeliveryEnabled)
+            hasDepth: photoOutput.isDepthDataDeliveryEnabled,
+            hasFlash: photoOutput.supportedFlashModes.contains(.on))
     }
 
     static func limits(of device: AVCaptureDevice) -> ExposureLimits {
@@ -308,6 +311,7 @@ public final class CameraController: NSObject, @unchecked Sendable {
                 let photoSettings: AVCapturePhotoSettings
                 do {
                     photoSettings = try makePhotoSettings(for: settings.photoFormat)
+                    applyFlash(settings.flash, to: photoSettings)
                 } catch {
                     continuation.resume(throwing: error)
                     return
@@ -323,6 +327,18 @@ public final class CameraController: NSObject, @unchecked Sendable {
             }
         }
         return CapturedPhoto(processed: processed, raw: raw, settings: settings)
+    }
+
+    /// El flash elegido, si la cámara lo ofrece (pedir uno que no está tira una excepción).
+    private func applyFlash(_ flash: FlashMode, to settings: AVCapturePhotoSettings) {
+        let mode: AVCaptureDevice.FlashMode = switch flash {
+        case .off: .off
+        case .auto: .auto
+        case .on: .on
+        }
+        if photoOutput.supportedFlashModes.contains(mode) {
+            settings.flashMode = mode
+        }
     }
 
     private func makePhotoSettings(for format: PhotoFormat) throws -> AVCapturePhotoSettings {

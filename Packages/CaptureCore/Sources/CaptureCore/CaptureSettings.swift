@@ -55,6 +55,22 @@ public enum PhotoFormat: String, Sendable, Hashable, CaseIterable, Identifiable 
     }
 }
 
+/// Flash: apagado, automático (si hace falta luz) o siempre.
+public enum FlashMode: String, Sendable, Hashable, CaseIterable {
+    case off
+    case auto
+    case on
+
+    /// El siguiente al tocar el botón: apagado → automático → siempre → apagado.
+    public var next: FlashMode {
+        switch self {
+        case .off: .auto
+        case .auto: .on
+        case .on: .off
+        }
+    }
+}
+
 /// Lo que el usuario eligió en la UI. Los valores `nil` significan "automático".
 public struct CaptureSettings: Sendable, Hashable {
     public var program: ExposureProgram
@@ -63,16 +79,19 @@ public struct CaptureSettings: Sendable, Hashable {
     public var shutterSeconds: Double?
     public var whiteBalance: WhiteBalanceSetting
     public var photoFormat: PhotoFormat
+    /// Arranca apagado (no se guarda entre sesiones).
+    public var flash: FlashMode
 
     public init(program: ExposureProgram = .program, exposureBias: Float = 0, iso: Float? = nil,
                 shutterSeconds: Double? = nil, whiteBalance: WhiteBalanceSetting = .auto,
-                photoFormat: PhotoFormat = .rawJPEG) {
+                photoFormat: PhotoFormat = .rawJPEG, flash: FlashMode = .off) {
         self.program = program
         self.exposureBias = exposureBias
         self.iso = iso
         self.shutterSeconds = shutterSeconds
         self.whiteBalance = whiteBalance
         self.photoFormat = photoFormat
+        self.flash = flash
     }
 
     /// Paradas de apertura simulada que ofrece el modo A.
