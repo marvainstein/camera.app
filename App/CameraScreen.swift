@@ -93,7 +93,7 @@ struct CameraScreen: View {
             }
         }
         .fileImporter(isPresented: $importsCube,
-                      allowedContentTypes: [UTType(filenameExtension: "cube") ?? .data, .plainText, .data],
+                      allowedContentTypes: [UTType(filenameExtension: "cube") ?? .data, .zip, .plainText, .data],
                       allowsMultipleSelection: true) { result in
             if case .success(let urls) = result {
                 Task { await model.importCubes(at: urls) }
@@ -299,7 +299,12 @@ struct CameraScreen: View {
             }
         }
         if let text {
-            Text(text)
+            HStack(spacing: 8) {
+                if model.isImporting {
+                    ProgressView().controlSize(.small)
+                }
+                Text(text)
+            }
                 .font(.footnote)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
@@ -350,7 +355,7 @@ struct CameraScreen: View {
             Button("Pegar receta", systemImage: "doc.on.clipboard") {
                 model.importRecipe(from: UIPasteboard.general.string ?? "")
             }
-            Button("Importar LUTs (.cube)…", systemImage: "square.and.arrow.down") { importsCube = true }
+            Button("Importar LUTs (.cube o .zip)…", systemImage: "square.and.arrow.down") { importsCube = true }
         } label: {
             Image(systemName: "wand.and.stars")
                 .padding(8)

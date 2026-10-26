@@ -1332,3 +1332,72 @@ private func photoWithMattes(_ mattes: [(CFString, [UInt8])]) throws -> Data {
         #expect(base.combined(with: [detail]).pixels == [100, 100, 255, 0, 100, 100, 0, 0])
     }
 }
+
+@Suite struct ZipArchiveTests {
+    private var macZip: Data {
+        get throws { try Data(contentsOf: try #require(Bundle.module.url(forResource: "luts-de-prueba", withExtension: "zip"))) }
+    }
+
+    @Test func readsTheCubesOfAZipMadeOnAMac() throws {
+        // Comprimido con la Mac (ditto, como "Comprimir" en Finder): carpeta, un .txt y __MACOSX.
+        let entries = try ZipArchive.entries(in: macZip) { $0.lowercased().hasSuffix(".cube") }
+        #expect(entries.map(\.name).sorted() == ["Calido", "Gris"])
+        for entry in entries {
+            let lut = try LUT3D(cube: String(decoding: entry.data, as: UTF8.self), size: 17)
+            #expect(lut.size == 17)
+        }
+        let gray = try #require(entries.first { $0.name == "Gris" })
+        #expect(try LUT3D(cube: String(decoding: gray.data, as: UTF8.self), size: 17).isMonochrome)
+    }
+
+    @Test func skipsWhatTheMacAddsAndFolders() throws {
+        let paths = try ZipArchive.entries(in: macZip).map(\.path)
+        #expect(paths.sorted() == ["Mis LUTs/Calido.cube", "Mis LUTs/Gris.cube", "Mis LUTs/leeme.txt"])
+    }
+
+    @Test func rejectsWhatIsNotAZip() {
+        #expect(throws: ZipArchive.Error.notAZip) { try ZipArchive.entries(in: Data("LUT_3D_SIZE 2".utf8)) }
+        #expect(throws: ZipArchive.Error.notAZip) { try ZipArchive.entries(in: Data()) }
+    }
+}
+
+@Suite struct CubeParsingTests {
+    /// Un `.cube` de `n`³ con valores propios (no la identidad), y el mismo LUT armado a mano.
+    private func sample(n: Int, lineEnding: String = "\n") -> (text: String, values: [SIMD3<Float>]) {
+        var values: [SIMD3<Float>] = []
+        var lines = ["# probando", "TITLE \"muestra\"", "LUT_3D_SIZE \(n)"]
+        for b in 0..<n {
+            for g in 0..<n {
+                for r in 0..<n {
+                    let v = SIMD3<Float>(Float(r) / Float(n - 1), Float(g) / Float(n - 1), Float(b) / Float(n - 1))
+                    let out = SIMD3<Float>(v.x * 0.9 + 0.05, v.y * v.y, 1 - v.z)
+                    values.append(out)
+                    lines.append(String(format: "%.6f %.6f %.6f", out.x, out.y, out.z) + (r == 0 ? "  # fila" : ""))
+                }
+            }
+        }
+        return (lines.joined(separator: lineEnding), values)
+    }
+
+    @Test func sameSizeCopiesTheValuesLikeResamplingWould() throws {
+        let (text, values) = sample(n: 17)
+        let copied = try LUT3D(cube: text, size: 17)
+        let reference = LUT3D(size: 17) { rgb in
+            let i = SIMD3<Int>((rgb * 16).rounded(.toNearestOrAwayFromZero))
+            return values[i.x + i.y * 17 + i.z * 289]
+        }
+        #expect(copied == reference)
+    }
+
+    @Test func readsWindowsLineEndings() throws {
+        let unix = try LUT3D(cube: sample(n: 5).text, size: 9)
+        let windows = try LUT3D(cube: sample(n: 5, lineEnding: "\r\n").text, size: 9)
+        #expect(unix == windows)
+    }
+
+    @Test func reportsTheRightLineOfABadRow() {
+        #expect(throws: LUT3D.CubeError.badRow(4)) {
+            try LUT3D(cube: "LUT_3D_SIZE 2\r\n0 0 0\r\n\r\n1 x 1")
+        }
+    }
+}
