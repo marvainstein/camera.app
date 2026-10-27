@@ -20,47 +20,32 @@ struct CameraScreen: View {
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            // Cámara en vivo: el visor ocupa toda la pantalla, debajo de los controles.
-            if !model.showsWholeFrame, let preview = model.preview {
-                comparablePreview(preview).ignoresSafeArea()
-            }
-            // Destello al disparar (sobre el visor, debajo de los controles).
-            Color.black
-                .opacity(flashOpacity)
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
-            VStack(spacing: 12) {
+            VStack(spacing: 10) {
                 topBar
-                if model.showsWholeFrame, let preview = model.preview {
-                    // Foto de la fototeca o editor abierto: la imagen entera, entre los controles.
-                    comparablePreview(preview)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                } else if model.status == .running, model.draft == nil {
-                    // Cámara en vivo: nivel e histograma entre los controles.
-                    ViewfinderHUD(model: model)
+                    .padding(.horizontal, 16)
+                if let preview = model.preview {
+                    // El visor muestra la foto entera (cámara, foto abierta o editor), entre los controles:
+                    // así el formato y el recorte por focal se ven como van a salir.
+                    viewfinder(preview)
                 } else {
                     Spacer()
                 }
-                if model.draft != nil {
-                    RecipeEditor(model: model)
-                        .containerRelativeFrame(.vertical) { height, _ in height * 0.45 }
-                } else {
-                    if showsLookCard {
-                        LookInfoCard(model: model)
-                            .transition(.opacity)
-                    }
-                    statusBanner
-                    if showsLookBrowser {
-                        LookBrowser(model: model) { withAnimation(.snappy) { showsLookBrowser = false } }
-                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                Group {
+                    if model.draft != nil {
+                        RecipeEditor(model: model)
+                            .containerRelativeFrame(.vertical) { height, _ in height * 0.45 }
                     } else {
-                        lookBar
+                        if showsLookBrowser {
+                            LookBrowser(model: model) { withAnimation(.snappy) { showsLookBrowser = false } }
+                                .transition(.move(edge: .bottom).combined(with: .opacity))
+                        } else {
+                            lookBar
+                        }
+                        shutterRow
                     }
-                    lookSliders
-                    shutterRow
                 }
+                .padding(.horizontal, 16)
             }
-            .padding(.horizontal, 16)
             .padding(.vertical, 8)
         }
         .task { await model.start() }
@@ -103,6 +88,36 @@ struct CameraScreen: View {
             ManualControls(settings: $model.settings, limits: model.limits)
                 .presentationDetents([.medium, .large])
         }
+    }
+
+    /// El visor con lo que va encima: nivel e histograma (cámara en vivo), avisos y la tarjeta del Look
+    /// abajo, y el destello del disparo.
+    private func viewfinder(_ preview: PreviewRenderer) -> some View {
+        comparablePreview(preview)
+            .overlay {
+                if model.status == .running, model.photo == nil, model.draft == nil {
+                    ViewfinderHUD(model: model)
+                }
+            }
+            .overlay(alignment: .bottom) {
+                if model.draft == nil {
+                    VStack(spacing: 8) {
+                        if showsLookCard {
+                            LookInfoCard(model: model)
+                                .transition(.opacity)
+                        }
+                        statusBanner
+                    }
+                    .padding(10)
+                    .allowsHitTesting(false)
+                }
+            }
+            .overlay {
+                Color.black
+                    .opacity(flashOpacity)
+                    .allowsHitTesting(false)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: model.showsWholeFrame ? 12 : 0))
     }
 
     /// El visor; al comparar, arrastrar mueve la línea de antes/después.
@@ -184,6 +199,8 @@ struct CameraScreen: View {
 
             Spacer()
 
+            flashButton
+
             formatMenu
 
             framingMenu
@@ -196,6 +213,30 @@ struct CameraScreen: View {
                 Image(systemName: "slider.horizontal.3")
             }
             .accessibilityLabel("Controles manuales")
+        }
+    }
+
+    /// Flash: cada toque pasa al siguiente (apagado → automático → siempre). Arranca apagado.
+    @ViewBuilder private var flashButton: some View {
+        if model.capabilities?.hasFlash == true, model.photo == nil {
+            let flash = model.settings.flash
+            let icon = switch flash {
+            case .off: "bolt.slash"
+            case .auto: "bolt.badge.automatic"
+            case .on: "bolt.fill"
+            }
+            let label = switch flash {
+            case .off: "Flash apagado"
+            case .auto: "Flash automático"
+            case .on: "Flash siempre"
+            }
+            Button {
+                model.settings.flash = flash.next
+            } label: {
+                Image(systemName: icon)
+                    .foregroundStyle(flash == .on ? Color.yellow : Color.accentColor)
+            }
+            .accessibilityLabel(label)
         }
     }
 
@@ -359,15 +400,6 @@ struct CameraScreen: View {
         .accessibilityLabel("Recetas")
     }
 
-    private var lookSliders: some View {
-        VStack(spacing: 4) {
-            LabeledSlider(title: "Intensidad", value: $model.intensity)
-            LabeledSlider(title: "Grano", value: $model.grain)
-        }
-        .padding(12)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-    }
-
     /// Fototeca a la izquierda del disparador, comparar a la derecha (como la app de Cámara).
     private var shutterRow: some View {
         HStack {
@@ -424,7 +456,7 @@ struct CameraScreen: View {
     }
 }
 
-private struct LabeledSlider: View {
+struct LabeledSlider: View {
     let title: String
     @Binding var value: Float
 

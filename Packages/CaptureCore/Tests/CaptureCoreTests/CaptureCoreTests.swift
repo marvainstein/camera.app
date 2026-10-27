@@ -172,3 +172,12 @@ private let limits = ExposureLimits(isoRange: 32...3200, shutterRange: (1.0 / 16
                 == FocusGeometry.devicePoint(fromFrame: p))
     }
 }
+
+@Suite struct FlashTests {
+    @Test func startsOffAndCyclesThroughTheModes() {
+        #expect(CaptureSettings().flash == .off)
+        #expect(FlashMode.off.next == .auto)
+        #expect(FlashMode.auto.next == .on)
+        #expect(FlashMode.on.next == .off)
+    }
+}

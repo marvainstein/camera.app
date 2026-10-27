@@ -356,7 +356,8 @@ final class CameraModel {
     }
 
     private func updatePreview() {
-        preview?.contentMode = showsWholeFrame ? .aspectFit : .aspectFill
+        // La foto entera siempre (también la cámara en vivo): lo que se ve es lo que sale.
+        preview?.contentMode = .aspectFit
         preview?.bokeh = bokeh
         preview?.liveHistogram.isEnabled = guides.histogram && photo == nil && status == .running
         if !guides.histogram || photo != nil { histogram = [] }
