@@ -73,6 +73,8 @@ final class CameraModel {
     private(set) var userLooks: [Look] = []
     private(set) var capabilities: CameraCapabilities?
     private(set) var isCapturing = false
+    /// Importando LUTs (puede tardar: se muestra el progreso).
+    private(set) var isImporting = false
     /// Sube con cada disparo (también al guardar una edición): el destello y la vibración lo siguen.
     private(set) var shutterCount = 0
     /// Miniatura de la última foto guardada, para el botón de la fototeca.
@@ -84,7 +86,8 @@ final class CameraModel {
             guard message != nil else { return }
             messageTask = Task { [weak self] in
                 try? await Task.sleep(for: Self.messageDuration)
-                guard !Task.isCancelled else { return }
+                // Mientras importa, el progreso queda a la vista.
+                guard !Task.isCancelled, self?.isImporting == false else { return }
                 self?.message = nil
             }
         }
@@ -457,37 +460,64 @@ final class CameraModel {
 
     /// Importa uno o varios LUT `.cube` del usuario como recetas (el LUT de base, sliders encima). Si
     /// alguno falla sigue con los demás, y al final avisa cuántos entraron y cuáles no.
+    /// Importa `.cube` sueltos o dentro de `.zip` (todos los `.cube` que tenga, en cualquier carpeta).
+    /// Va de a uno (un `.cube` de 64³ pesa varios MB) y muestra el progreso.
     func importCubes(at urls: [URL]) async {
         guard let userStore, !urls.isEmpty else { return }
-        var imported: [Look] = []
+        isImporting = true
+        defer { isImporting = false }
+        message = "Abriendo \(urls.count == 1 ? urls[0].lastPathComponent : "\(urls.count) archivos")…"
+
+        // Qué hay para importar: cada .cube suelto y los de cada .zip (sin descomprimirlos todavía).
+        var sources: [CubeSource] = []
         var failed: [String] = []
         for url in urls {
             let accessing = url.startAccessingSecurityScopedResource()
             defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-            let name = url.deletingPathExtension().lastPathComponent
             do {
-                let data = try Data(contentsOf: url)
+                let data = try Data(contentsOf: url, options: .mappedIfSafe)
+                if url.pathExtension.lowercased() == "zip" {
+                    let files = try await Task.detached(priority: .userInitiated) {
+                        try ZipArchive.files(in: data) { $0.lowercased().hasSuffix(".cube") }
+                    }.value
+                    if files.isEmpty { failed.append("\(url.lastPathComponent) (no tiene archivos .cube)") }
+                    sources += files.map { CubeSource(name: $0.name, zip: data, file: $0, data: nil) }
+                } else {
+                    sources.append(CubeSource(name: url.deletingPathExtension().lastPathComponent, zip: nil, file: nil,
+                                              data: data))
+                }
+            } catch ZipArchive.Error.notAZip {
+                failed.append("\(url.lastPathComponent) (no es un .zip válido)")
+            } catch {
+                failed.append("\(url.lastPathComponent) (no se pudo abrir)")
+            }
+        }
+
+        var imported: [Look] = []
+        for (index, source) in sources.enumerated() {
+            message = "Importando \(index + 1) de \(sources.count): \(source.name)…"
+            do {
                 let look = try await Task.detached(priority: .userInitiated) {
-                    let text = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
-                    return try userStore.importCube(text, name: name)
+                    try userStore.importCube(data: try source.load(), name: source.name)
                 }.value
                 imported.append(look)
             } catch LUT3D.CubeError.has1DLUT {
-                failed.append("\(url.lastPathComponent) (tiene LUT 1D o shaper)")
+                failed.append("\(source.name) (tiene LUT 1D o shaper)")
             } catch LUT3D.CubeError.notA3DLUT {
-                failed.append("\(url.lastPathComponent) (no es un LUT 3D)")
+                failed.append("\(source.name) (no es un LUT 3D)")
             } catch {
-                failed.append(url.lastPathComponent)
+                failed.append(source.name)
             }
         }
+
         if !imported.isEmpty {
             userLooks.append(contentsOf: imported)
             guard persistUserLooks() else { return }
             select(imported[0])
         }
-        let summary = urls.count == 1 && failed.isEmpty
+        let summary = sources.count == 1 && imported.count == 1
             ? "Importado: \(imported[0].name)"
-            : "Importados \(imported.count) de \(urls.count)"
+            : "Importados \(imported.count) de \(sources.count)"
         message = failed.isEmpty ? summary : summary + " · no se pudo: " + failed.joined(separator: ", ")
     }
 
@@ -993,5 +1023,18 @@ private struct BakeJob: @unchecked Sendable {
     func render(_ data: Data) throws -> Data {
         try renderer.renderPhoto(data, lut: lut, parameters: parameters, framing: framing,
                                  lensFocalLength: lensFocalLength, bokeh: bokeh, outputType: outputType)
+    }
+}
+
+/// Un `.cube` para importar: suelto (`data`) o dentro de un `.zip` (se descomprime al importarlo).
+private struct CubeSource: Sendable {
+    let name: String
+    let zip: Data?
+    let file: ZipArchive.File?
+    let data: Data?
+
+    func load() throws -> Data {
+        if let zip, let file { return try ZipArchive.extract(file, from: zip) }
+        return data ?? Data()
     }
 }

@@ -30,7 +30,12 @@ public struct UserLookStore: Sendable {
     /// el LUT como base y la receta neutra encima (para retocarlo con los sliders). No lo agrega a la
     /// lista: eso lo hace quien llama, con `save`.
     public func importCube(_ text: String, name: String) throws -> Look {
-        let lut = try LUT3D(cube: text, size: LookCatalog.lutSize)
+        try importCube(data: Data(text.utf8), name: name)
+    }
+
+    /// Como `importCube(_:name:)`, con los bytes del archivo.
+    public func importCube(data: Data, name: String) throws -> Look {
+        let lut = try LUT3D(cubeData: data, size: LookCatalog.lutSize)
         let id = Self.newID()
         try FileManager.default.createDirectory(at: lutDirectory, withIntermediateDirectories: true)
         try lut.encoded().write(to: lutDirectory.appendingPathComponent(id + ".lut"), options: .atomic)
